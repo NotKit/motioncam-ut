@@ -14,43 +14,62 @@ Item {
     Rectangle { anchors.fill: parent; color: "black"; z: -1 }
 
     // Orientation handling
-    // Screen.orientation reports the same value for both landscape directions on
-    // Ubuntu Touch (Mir doesn't expose InvertedLandscape separately to apps).
-    // Use the hardware OrientationSensor instead — it gives the true physical
-    // orientation regardless of what the compositor reports.
+    // The hardware sensor fires before Mir resizes the window, which would cause
+    // the CameraBridge to adopt the new aspect ratio while the window is still
+    // the old shape — producing a visible flicker.
     //
-    // OrientationReading mapping → deviceRotation → displayRotation in C++:
-    //   TopUp   (portrait)            dev=0   display=90  UV set 1
-    //   LeftUp  (CW, top→right)       dev=90  display=0   UV set 0
-    //   TopDown (inverted portrait)   dev=180 display=270 UV set 3
-    //   RightUp (CCW, top→left)       dev=270 display=180 UV set 2
-    //   FaceUp/FaceDown               keep current (device flat on table)
+    // Fix: store the sensor reading as a pending rotation and only commit it
+    // once the window dimensions confirm the system has finished rotating
+    // (portrait↔landscape transitions always come with a window resize).
+    // For same-size transitions (portrait↔inverted-portrait, left↔right
+    // landscape) applyIfReady() fires immediately since the aspect ratio already
+    // matches and no window resize will follow.
+
+    property int _pendingRot: 0
 
     OrientationSensor {
         id: orientSensor
         active: true
         onReadingChanged: {
+            var rot
             switch (reading.orientation) {
-                case OrientationReading.TopUp:   camera.setDeviceRotation(0);   break
-                case OrientationReading.LeftUp:  camera.setDeviceRotation(90);  break
-                case OrientationReading.TopDown: camera.setDeviceRotation(180); break
-                case OrientationReading.RightUp: camera.setDeviceRotation(270); break
-                default: break  // FaceUp / FaceDown — keep previous rotation
+                case OrientationReading.TopUp:   rot = 0;   break
+                case OrientationReading.LeftUp:  rot = 90;  break
+                case OrientationReading.TopDown: rot = 180; break
+                case OrientationReading.RightUp: rot = 270; break
+                default: return  // FaceUp / FaceDown — ignore
             }
+            root._pendingRot = rot
+            // For same-axis transitions (portrait↔inverted, left↔right landscape)
+            // no window resize follows, so schedule directly.
+            Qt.callLater(root.applyIfReady)
         }
     }
 
+    // Qt.callLater deduplicates: even though onWidthChanged and onHeightChanged
+    // fire separately, applyIfReady() runs only once per event-loop tick, after
+    // both dimensions are settled. This prevents the intermediate square-window
+    // state from satisfying the portrait/landscape check prematurely.
+    onWidthChanged:  Qt.callLater(root.applyIfReady)
+    onHeightChanged: Qt.callLater(root.applyIfReady)
+
+    function applyIfReady() {
+        var pendingPortrait = (_pendingRot === 0 || _pendingRot === 180)
+        var windowPortrait  = (root.height >= root.width)
+        if (pendingPortrait === windowPortrait)
+            camera.setDeviceRotation(_pendingRot)
+    }
+
     Component.onCompleted: {
-        // Apply the sensor's current reading immediately so the first frame
-        // is rendered with the correct rotation before any change event fires.
         var o = orientSensor.reading ? orientSensor.reading.orientation
                                      : OrientationReading.TopUp
         switch (o) {
-            case OrientationReading.LeftUp:  camera.setDeviceRotation(90);  break
-            case OrientationReading.TopDown: camera.setDeviceRotation(180); break
-            case OrientationReading.RightUp: camera.setDeviceRotation(270); break
-            default:                         camera.setDeviceRotation(0);   break
+            case OrientationReading.LeftUp:  _pendingRot = 90;  break
+            case OrientationReading.TopDown: _pendingRot = 180; break
+            case OrientationReading.RightUp: _pendingRot = 270; break
+            default:                         _pendingRot = 0;   break
         }
+        camera.setDeviceRotation(_pendingRot)
     }
 
     // Camera bridge
