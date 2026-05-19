@@ -24,6 +24,11 @@ Item {
             if (camera.isoValue > 0)
                 exposureLabel.text = "ISO " + camera.isoValue
         }
+        onRecordingSaved: function(path) {
+            savedLabel.text = "Saved: " + path.split("/").pop()
+            savedLabel.visible = true
+            savedLabelTimer.restart()
+        }
     }
 
     // ── Recording overlay ─────────────────────────────────────────────────────
@@ -53,6 +58,16 @@ Item {
         visible: false
         wrapMode: Text.WordWrap
         width: parent.width * 0.8
+    }
+
+    // ── Save confirmation banner ──────────────────────────────────────────────
+    Label {
+        id: savedLabel
+        anchors { bottom: parent.bottom; bottomMargin: units.gu(14); horizontalCenter: parent.horizontalCenter }
+        color: "white"
+        font.pixelSize: units.gu(1.5)
+        visible: false
+        Timer { id: savedLabelTimer; interval: 3000; onTriggered: savedLabel.visible = false }
     }
 
     // ── Bottom controls ───────────────────────────────────────────────────────

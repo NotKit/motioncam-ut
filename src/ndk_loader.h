@@ -24,7 +24,7 @@ struct Camera2NDK {
     camera_status_t  (*ACameraMetadata_getConstEntry)(const ACameraMetadata*, uint32_t,
                          ACameraMetadata_const_entry*);
     void             (*ACameraMetadata_free)(ACameraMetadata*);
-    camera_status_t  (*ACameraMetadata_copy)(const ACameraMetadata*, ACameraMetadata**);
+    ACameraMetadata* (*ACameraMetadata_copy)(const ACameraMetadata*);
 
     // ACameraDevice
     camera_status_t  (*ACameraDevice_close)(ACameraDevice*);
@@ -32,13 +32,15 @@ struct Camera2NDK {
                          const ACaptureSessionOutputContainer*,
                          const ACameraCaptureSession_stateCallbacks*,
                          ACameraCaptureSession**);
-    camera_status_t  (*ACameraDevice_createCaptureRequest)(ACameraDevice*,
+    camera_status_t  (*ACameraDevice_createCaptureRequest)(const ACameraDevice*,
                          ACameraDevice_request_template, ACaptureRequest**);
 
     // ACaptureSessionOutputContainer
     camera_status_t  (*ACaptureSessionOutputContainer_create)(ACaptureSessionOutputContainer**);
     void             (*ACaptureSessionOutputContainer_free)(ACaptureSessionOutputContainer*);
     camera_status_t  (*ACaptureSessionOutputContainer_add)(ACaptureSessionOutputContainer*,
+                         const ACaptureSessionOutput*);
+    camera_status_t  (*ACaptureSessionOutputContainer_remove)(ACaptureSessionOutputContainer*,
                          const ACaptureSessionOutput*);
 
     // ACaptureSessionOutput
@@ -82,7 +84,7 @@ struct MediaNDK {
                         AImageReader_ImageListener*);
     media_status_t  (*AImageReader_acquireLatestImage)(AImageReader*, AImage**);
     media_status_t  (*AImageReader_acquireNextImage)(AImageReader*, AImage**);
-    media_status_t  (*AImageReader_getMaxImages)(AImageReader*, int32_t*);
+    media_status_t  (*AImageReader_getMaxImages)(const AImageReader*, int32_t*);
 
     void            (*AImage_delete)(AImage*);
     media_status_t  (*AImage_getHardwareBuffer)(const AImage*, AHardwareBuffer**);

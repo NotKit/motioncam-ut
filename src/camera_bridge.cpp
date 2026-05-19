@@ -15,6 +15,11 @@
 #include <media/NdkImage.h>
 #include <json11/json11.hpp>
 
+#include <motioncam/RawBufferManager.h>
+
+#include <fcntl.h>
+#include <unistd.h>
+#include <cerrno>
 #include <cstdio>
 #include <cstring>
 
@@ -357,21 +362,69 @@ QString CameraBridge::defaultOutputPath() const {
 }
 
 void CameraBridge::startRecording(const QString& outputPath) {
-    if (!isReady() || isRecording()) return;
+    if (!isReady() || isRecording() || !cameraDesc_) return;
     QString path = outputPath.isEmpty() ? defaultOutputPath() : outputPath;
-    // TODO: call cameraSession_ recording API once mapped
+
+    int fd = ::open(path.toLocal8Bit().constData(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) {
+        emit cameraError(QString("Cannot open output file: %1 (errno=%2)").arg(path).arg(errno));
+        return;
+    }
+    outputFd_   = fd;
+    outputPath_ = path;
+
+    // Hook the buffer streamer: frames arriving via RawImageConsumer will be
+    // compressed and written to the file.  audioFd=-1 skips audio (AudioStub).
+    motioncam::RawBufferManager::get().enableStreaming(
+        {outputFd_}, -1, audio_, 1, cameraDesc_->metadata);
+
     recording_.store(true);
     frameCount_.store(0);
-    QMetaObject::invokeMethod(this, [this]() { emit recordingChanged(); emit frameCountChanged(); },
-                              Qt::QueuedConnection);
+    recordingTimer_.start();
+
+    if (!statsTimer_) {
+        statsTimer_ = new QTimer(this);
+        connect(statsTimer_, &QTimer::timeout, this, &CameraBridge::pollRecordingStats);
+    }
+    statsTimer_->start(250);
+
+    emit recordingChanged();
+    emit frameCountChanged();
     fprintf(stderr, "CameraBridge: recording to %s\n", path.toStdString().c_str());
 }
 
 void CameraBridge::stopRecording() {
     if (!isRecording()) return;
     recording_.store(false);
-    QMetaObject::invokeMethod(this, [this]() { emit recordingChanged(); }, Qt::QueuedConnection);
-    fprintf(stderr, "CameraBridge: recording stopped\n");
+
+    if (statsTimer_) statsTimer_->stop();
+
+    // Capture locals for the background finalizer
+    int  fdToClose  = outputFd_;
+    QString saved   = outputPath_;
+    outputFd_   = -1;
+    outputPath_ = QString();
+
+    // endStreaming() joins the IO/process threads — run off the UI thread so we
+    // don't block QML while the streamer flushes remaining frames to disk.
+    QtConcurrent::run([this, fdToClose, saved]() {
+        motioncam::RawBufferManager::get().endStreaming();
+        if (fdToClose >= 0) ::close(fdToClose);
+        QMetaObject::invokeMethod(this, [this, saved]() {
+            emit recordingChanged();
+            emit recordingSaved(saved);
+        }, Qt::QueuedConnection);
+    });
+}
+
+void CameraBridge::pollRecordingStats() {
+    size_t memBytes, outputBytes;
+    float  fps;
+    motioncam::RawBufferManager::get().recordingStats(memBytes, fps, outputBytes);
+    // Derive frame count from elapsed recording time × estimated fps
+    float elapsedSec = recordingTimer_.elapsed() / 1000.0f;
+    frameCount_.store((int)(elapsedSec * fps));
+    emit frameCountChanged();
 }
 
 void CameraBridge::setAutoExposure() {

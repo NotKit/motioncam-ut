@@ -45,6 +45,7 @@ bool load_camera2ndk(Camera2NDK& out) {
     LOAD_SYM(lib, out, ACaptureSessionOutputContainer_create);
     LOAD_SYM(lib, out, ACaptureSessionOutputContainer_free);
     LOAD_SYM(lib, out, ACaptureSessionOutputContainer_add);
+    LOAD_SYM_OPT(lib, out, ACaptureSessionOutputContainer_remove);
     LOAD_SYM(lib, out, ACaptureSessionOutput_create);
     LOAD_SYM(lib, out, ACaptureSessionOutput_free);
     LOAD_SYM(lib, out, ACameraOutputTarget_create);

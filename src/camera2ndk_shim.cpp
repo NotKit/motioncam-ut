@@ -53,10 +53,9 @@ extern "C" camera_status_t ACameraMetadata_getConstEntry(
 extern "C" void ACameraMetadata_free(ACameraMetadata* m) {
     g_camera2ndk.ACameraMetadata_free(m);
 }
-extern "C" camera_status_t ACameraMetadata_copy(
-        const ACameraMetadata* src, ACameraMetadata** dst) {
-    if (!g_camera2ndk.ACameraMetadata_copy) return ACAMERA_ERROR_UNSUPPORTED_OPERATION;
-    return g_camera2ndk.ACameraMetadata_copy(src, dst);
+extern "C" ACameraMetadata* ACameraMetadata_copy(const ACameraMetadata* src) {
+    if (!g_camera2ndk.ACameraMetadata_copy) return nullptr;
+    return g_camera2ndk.ACameraMetadata_copy(src);
 }
 
 // ── ACameraDevice ─────────────────────────────────────────────────────────────
@@ -71,7 +70,7 @@ extern "C" camera_status_t ACameraDevice_createCaptureSession(
     return g_camera2ndk.ACameraDevice_createCaptureSession(d, c, cb, s);
 }
 extern "C" camera_status_t ACameraDevice_createCaptureRequest(
-        ACameraDevice* d, ACameraDevice_request_template t, ACaptureRequest** r) {
+        const ACameraDevice* d, ACameraDevice_request_template t, ACaptureRequest** r) {
     return g_camera2ndk.ACameraDevice_createCaptureRequest(d, t, r);
 }
 
@@ -88,6 +87,12 @@ extern "C" void ACaptureSessionOutputContainer_free(
 extern "C" camera_status_t ACaptureSessionOutputContainer_add(
         ACaptureSessionOutputContainer* c, const ACaptureSessionOutput* o) {
     return g_camera2ndk.ACaptureSessionOutputContainer_add(c, o);
+}
+extern "C" camera_status_t ACaptureSessionOutputContainer_remove(
+        ACaptureSessionOutputContainer* c, const ACaptureSessionOutput* o) {
+    if (!g_camera2ndk.ACaptureSessionOutputContainer_remove)
+        return ACAMERA_ERROR_UNSUPPORTED_OPERATION;
+    return g_camera2ndk.ACaptureSessionOutputContainer_remove(c, o);
 }
 
 // ── ACaptureSessionOutput ─────────────────────────────────────────────────────
@@ -211,7 +216,7 @@ extern "C" media_status_t AImageReader_acquireLatestImage(AImageReader* r, AImag
 extern "C" media_status_t AImageReader_acquireNextImage(AImageReader* r, AImage** img) {
     return g_mediandk.AImageReader_acquireNextImage(r, img);
 }
-extern "C" media_status_t AImageReader_getMaxImages(AImageReader* r, int32_t* max) {
+extern "C" media_status_t AImageReader_getMaxImages(const AImageReader* r, int32_t* max) {
     if (!g_mediandk.AImageReader_getMaxImages) { *max = 0; return AMEDIA_OK; }
     return g_mediandk.AImageReader_getMaxImages(r, max);
 }

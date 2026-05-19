@@ -6,9 +6,9 @@ dependencies_target:
     - libhybris-dev
     - qtbase5-dev
     - qtdeclarative5-dev
-    - libopencv-dev
+    - libopencv-core-dev
+    - libopencv-imgproc-dev
+    - libopencv-photo-dev
     - libzstd-dev
-    - libexiv2-dev
-    - libdlib-dev
 skip_review: true
 kill: motioncam

@@ -14,6 +14,8 @@
 
 #include <QQuickFramebufferObject>
 #include <QString>
+#include <QTimer>
+#include <QElapsedTimer>
 #include <memory>
 #include <atomic>
 #include <string>
@@ -93,6 +95,7 @@ public:
 
 private:
     void initCamera();
+    void pollRecordingStats();
     QString defaultOutputPath() const;
 
     Camera2NDK ndk_{};
@@ -114,4 +117,9 @@ private:
     std::atomic<int>     frameCount_{0};
     std::atomic<int32_t> lastIso_{0};
     std::atomic<int64_t> lastExposureNs_{0};
+
+    int            outputFd_    = -1;
+    QString        outputPath_;
+    QTimer*        statsTimer_  = nullptr;
+    QElapsedTimer  recordingTimer_;
 };

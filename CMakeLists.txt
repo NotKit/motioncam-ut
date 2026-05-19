@@ -6,7 +6,15 @@ set(CMAKE_AUTOMOC ON)
 
 find_package(PkgConfig REQUIRED)
 find_package(Qt5 REQUIRED COMPONENTS Core Gui Quick Qml Concurrent)
-find_package(OpenCV REQUIRED COMPONENTS core imgproc photo)
+# opencv4.pc is only in the meta-package libopencv-dev (not individual component
+# packages); fall back to explicit paths when it's absent.
+pkg_check_modules(OpenCV opencv4)
+if(NOT OpenCV_FOUND)
+    set(OpenCV_INCLUDE_DIRS /usr/include/opencv4)
+    set(OpenCV_LIBRARIES opencv_core opencv_imgproc opencv_photo)
+    set(OpenCV_FOUND TRUE)
+endif()
+
 pkg_check_modules(EGL    REQUIRED egl)
 pkg_check_modules(GLES   REQUIRED glesv2)
 pkg_check_modules(ZSTD   REQUIRED libzstd)
@@ -25,13 +33,15 @@ configure_file(manifest.json.in ${CMAKE_CURRENT_BINARY_DIR}/manifest.json)
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 
-set(LIBMOTIONCAM_ROOT   ${CMAKE_SOURCE_DIR}/../motioncam/libMotionCam)
+set(LIBMOTIONCAM_ROOT   ${CMAKE_SOURCE_DIR}/libMotionCam)
 set(LIBMOTIONCAM_SRC    ${LIBMOTIONCAM_ROOT}/libMotionCam)
 set(THIRDPARTY          ${LIBMOTIONCAM_ROOT}/thirdparty)
 
 # ── DNG SDK (from source) ──────────────────────────────────────────────────────
 
 file(GLOB DNG_SDK_SOURCES ${THIRDPARTY}/dng_sdk/dng/*.cpp)
+# dng_xmp_sdk.cpp unconditionally includes XMP.incl_cpp (Adobe XMP SDK, not vendored)
+list(REMOVE_ITEM DNG_SDK_SOURCES ${THIRDPARTY}/dng_sdk/dng/dng_xmp_sdk.cpp)
 
 add_library(dng-sdk STATIC ${DNG_SDK_SOURCES})
 
@@ -60,7 +70,7 @@ add_library(motion-cam STATIC
     ${THIRDPARTY}/tinywav/tinywav.c
     ${LIBMOTIONCAM_SRC}/source/CameraProfile.cpp
     ${LIBMOTIONCAM_SRC}/source/Color.cpp
-    ${LIBMOTIONCAM_SRC}/source/ImageOps.cpp
+    # ImageOps.cpp excluded: defringe() uses Halide buffers directly (like ImageProcessor.cpp)
     ${LIBMOTIONCAM_SRC}/source/Logger.cpp
     ${LIBMOTIONCAM_SRC}/source/Measure.cpp
     ${LIBMOTIONCAM_SRC}/source/RawBufferManager.cpp
@@ -69,6 +79,7 @@ add_library(motion-cam STATIC
     ${LIBMOTIONCAM_SRC}/source/RawContainer.cpp
     ${LIBMOTIONCAM_SRC}/source/RawContainerImpl.cpp
     ${LIBMOTIONCAM_SRC}/source/RawContainerImpl_Legacy.cpp
+    ${LIBMOTIONCAM_SRC}/source/RawEncoder.cpp
     ${LIBMOTIONCAM_SRC}/source/RawImageBuffer.cpp
     ${LIBMOTIONCAM_SRC}/source/Settings.cpp
     ${LIBMOTIONCAM_SRC}/source/Temperature.cpp
@@ -76,6 +87,8 @@ add_library(motion-cam STATIC
 )
 
 target_include_directories(motion-cam PUBLIC
+    # android-headers first: shims HalideBuffer.h and opencv2/opencv.hpp
+    ${CMAKE_SOURCE_DIR}/android-headers
     ${LIBMOTIONCAM_SRC}/include
     ${THIRDPARTY}/json11
     ${THIRDPARTY}/miniz
@@ -99,17 +112,12 @@ target_compile_options(motion-cam PRIVATE
     -Wno-unused-parameter -Wno-sign-compare -Wno-reorder
 )
 
-# Prebuilt encoder library (raw pixel format packing/unpacking).
-# Built by the motioncam Android project; included here as-is since
-# it contains only arithmetic code with no Bionic-specific dependencies.
-add_library(motioncam-encoder STATIC IMPORTED)
-set_target_properties(motioncam-encoder PROPERTIES IMPORTED_LOCATION
-    ${LIBMOTIONCAM_SRC}/libs/libmotioncam-encoder.a)
+# RawEncoder.cpp is compiled from source in the motion-cam target above.
+# The prebuilt libmotioncam-encoder.a (Android NDK Bionic/libc++) is NOT used.
 
 target_link_libraries(motion-cam
     dng-sdk
-    motioncam-encoder
-    ${OpenCV_LIBS}
+    ${OpenCV_LIBRARIES}
     ${ZSTD_LIBRARIES}
 )
 
@@ -176,10 +184,12 @@ target_link_libraries(motioncam
     ${HYBRIS_COMMON_LIB}
     ${EGL_LIBRARIES}
     ${GLES_LIBRARIES}
-    ${OpenCV_LIBS}
+    ${OpenCV_LIBRARIES}
     ${ZSTD_LIBRARIES}
     motion-cam
     dng-sdk
+    pthread
+    z
 )
 
 set_target_properties(motioncam PROPERTIES LINK_FLAGS_RELEASE -s)
