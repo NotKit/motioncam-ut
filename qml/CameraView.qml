@@ -2,6 +2,7 @@ import QtQuick 2.12
 import QtQuick.Controls 2.5 as QQC2
 import QtQuick.Layouts 1.3
 import QtQuick.Window 2.12
+import QtSensors 5.2
 import Lomiri.Components 1.3
 import MotionCam 1.0
 
@@ -13,38 +14,43 @@ Item {
     Rectangle { anchors.fill: parent; color: "black"; z: -1 }
 
     // Orientation handling
-    // Use Screen.orientation to distinguish left-landscape (top→left, CCW rotation)
-    // from right-landscape (top→right, CW rotation). Without this, both produce
-    // the same width>height result but need different UV rotations in the renderer.
+    // Screen.orientation reports the same value for both landscape directions on
+    // Ubuntu Touch (Mir doesn't expose InvertedLandscape separately to apps).
+    // Use the hardware OrientationSensor instead — it gives the true physical
+    // orientation regardless of what the compositor reports.
     //
-    // Device rotation (CW from natural portrait) → displayRotation in C++:
-    //   Qt.PortraitOrientation         → 0°
-    //   Qt.LandscapeOrientation        → 90°  (top→right, device rotated CW)
-    //   Qt.InvertedPortraitOrientation → 180°
-    //   Qt.InvertedLandscapeOrientation→ 270° (top→left, device rotated CCW)
+    // OrientationReading mapping → deviceRotation → displayRotation in C++:
+    //   TopUp   (portrait)            dev=0   display=90  UV set 1
+    //   LeftUp  (CW, top→right)       dev=90  display=0   UV set 0
+    //   TopDown (inverted portrait)   dev=180 display=270 UV set 3
+    //   RightUp (CCW, top→left)       dev=270 display=180 UV set 2
+    //   FaceUp/FaceDown               keep current (device flat on table)
 
-    function applyOrientation() {
-        var deg
-        switch (Screen.orientation) {
-            case Qt.LandscapeOrientation:          deg = 90;  break
-            case Qt.InvertedPortraitOrientation:   deg = 180; break
-            case Qt.InvertedLandscapeOrientation:  deg = 270; break
-            default:                               deg = 0;   break
+    OrientationSensor {
+        id: orientSensor
+        active: true
+        onReadingChanged: {
+            switch (reading.orientation) {
+                case OrientationReading.TopUp:   camera.setDeviceRotation(0);   break
+                case OrientationReading.LeftUp:  camera.setDeviceRotation(90);  break
+                case OrientationReading.TopDown: camera.setDeviceRotation(180); break
+                case OrientationReading.RightUp: camera.setDeviceRotation(270); break
+                default: break  // FaceUp / FaceDown — keep previous rotation
+            }
         }
-        camera.setDeviceRotation(deg)
     }
 
     Component.onCompleted: {
-        Screen.orientationUpdateMask = Qt.PortraitOrientation
-                                     | Qt.LandscapeOrientation
-                                     | Qt.InvertedPortraitOrientation
-                                     | Qt.InvertedLandscapeOrientation
-        applyOrientation()
-    }
-
-    Connections {
-        target: Screen
-        onOrientationChanged: root.applyOrientation()
+        // Apply the sensor's current reading immediately so the first frame
+        // is rendered with the correct rotation before any change event fires.
+        var o = orientSensor.reading ? orientSensor.reading.orientation
+                                     : OrientationReading.TopUp
+        switch (o) {
+            case OrientationReading.LeftUp:  camera.setDeviceRotation(90);  break
+            case OrientationReading.TopDown: camera.setDeviceRotation(180); break
+            case OrientationReading.RightUp: camera.setDeviceRotation(270); break
+            default:                         camera.setDeviceRotation(0);   break
+        }
     }
 
     // Camera bridge
