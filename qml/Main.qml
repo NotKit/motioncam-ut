@@ -10,6 +10,8 @@ MainView {
     width:  units.gu(45)
     height: units.gu(75)
 
+    backgroundColor: "black"
+
     Page {
         anchors.fill: parent
         header: PageHeader {
