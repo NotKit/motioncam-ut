@@ -1,5 +1,7 @@
 // Qt headers first — they must be parsed before EGL/GLES on Linux (X11 macros clash).
 #include <QOpenGLFramebufferObject>
+#include <QImage>
+#include <QTransform>
 #include <QStandardPaths>
 #include <QDateTime>
 #include <QDir>
@@ -38,7 +40,9 @@ public:
         return new QOpenGLFramebufferObject(size, fmt);
     }
 
-    void synchronize(QQuickFramebufferObject*) override {}
+    void synchronize(QQuickFramebufferObject* fbo) override {
+        displayRotation_ = static_cast<CameraBridge*>(fbo)->displayRotation();
+    }
 
     void render() override {
         if (!initialised_) init();
@@ -118,19 +122,29 @@ private:
     }
 
     void drawQuad() {
-        // UVs rotate 90° CCW for back camera (sensor orientation 90°)
-        static const GLfloat kVerts[] = {
-            -1.f,  1.f, 0.f,  0.f, 1.f,
-            -1.f, -1.f, 0.f,  1.f, 1.f,
-             1.f, -1.f, 0.f,  1.f, 0.f,
-             1.f,  1.f, 0.f,  0.f, 0.f,
+        // Each row is one displayRotation case (index = displayRotation/90).
+        // Vertex layout per row: TL(x,y,z,u,v) BL BRV TR.
+        // Portrait (90°) UVs are empirically verified on device.
+        // Landscape and inverted cases are derived by successive 90°-CW
+        // rotations of the UV coordinates: (u,v) → (v, 1-u).
+        static const GLfloat kVerts[4][20] = {
+            // 0° — landscape-right: no sensor rotation needed
+            { -1, 1,0, 1,1,  -1,-1,0, 1,0,  1,-1,0, 0,0,  1,1,0, 0,1 },
+            // 90° — portrait (default back camera): 90° CCW UV rotation
+            { -1, 1,0, 0,1,  -1,-1,0, 1,1,  1,-1,0, 1,0,  1,1,0, 0,0 },
+            // 180° — landscape-left: 180° UV rotation
+            { -1, 1,0, 0,0,  -1,-1,0, 0,1,  1,-1,0, 1,1,  1,1,0, 1,0 },
+            // 270° — inverted portrait: 90° CW UV rotation
+            { -1, 1,0, 1,0,  -1,-1,0, 0,0,  1,-1,0, 0,1,  1,1,0, 1,1 },
         };
         static const GLushort kIdx[] = {0, 1, 2, 0, 2, 3};
+        int idx = (displayRotation_ / 90) & 3;
+        const GLfloat* v = kVerts[idx];
         glUseProgram(prog_);
         glEnableVertexAttribArray(loc_pos_);
         glEnableVertexAttribArray(loc_tc_);
-        glVertexAttribPointer(loc_pos_, 3, GL_FLOAT, GL_FALSE, 5*sizeof(GLfloat), kVerts);
-        glVertexAttribPointer(loc_tc_,  2, GL_FLOAT, GL_FALSE, 5*sizeof(GLfloat), kVerts+3);
+        glVertexAttribPointer(loc_pos_, 3, GL_FLOAT, GL_FALSE, 5*sizeof(GLfloat), v);
+        glVertexAttribPointer(loc_tc_,  2, GL_FLOAT, GL_FALSE, 5*sizeof(GLfloat), v+3);
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_EXTERNAL_OES, preview_tex_);
         glUniform1i(loc_tex_, 0);
@@ -175,6 +189,7 @@ private:
 
     CameraBridge* item_;
     bool   initialised_      = false;
+    int    displayRotation_  = 90;
     GLuint preview_tex_      = 0;
     GLuint prog_             = 0;
     GLint  loc_pos_          = -1;
@@ -207,6 +222,31 @@ CameraBridge::~CameraBridge() {
 
 QQuickFramebufferObject::Renderer* CameraBridge::createRenderer() const {
     return new CameraBridgeRenderer(const_cast<CameraBridge*>(this));
+}
+
+void CameraBridge::updateDisplayRotation() {
+    int orient = sensorOrientation_.load();
+    int devRot = deviceRotation_.load();
+    int dr = (orient - devRot + 360) % 360;
+    displayRotation_.store(dr);
+
+    int pw = previewStreamW_.load();
+    int ph = previewStreamH_.load();
+    // DisplayDimension always stores landscape (pw >= ph).
+    // For portrait display (dr % 180 == 90) the effective AR flips.
+    float ar = (pw > 0 && ph > 0)
+               ? ((dr % 180 == 90) ? (float)ph / pw : (float)pw / ph)
+               : 9.0f / 16.0f;
+    previewAspectRatio_.store(ar);
+    QMetaObject::invokeMethod(this, [this]() {
+        emit previewAspectRatioChanged();
+    }, Qt::QueuedConnection);
+    update();
+}
+
+void CameraBridge::setDeviceRotation(int degrees) {
+    deviceRotation_.store((degrees + 360) % 360);
+    updateDisplayRotation();
 }
 
 void CameraBridge::startCamera() {
@@ -299,6 +339,18 @@ void CameraBridge::initCamera() {
         return;
     }
     previewReader_ = rawReader;
+
+    // Store stream dimensions and sensor orientation, then compute
+    // displayRotation and previewAspectRatio for the current device orientation.
+    {
+        int pw = previewConfig.outputSize.width();
+        int ph = previewConfig.outputSize.height();
+        int orient = cameraDesc_ ? cameraDesc_->sensorOrientation : 90;
+        previewStreamW_.store(pw);
+        previewStreamH_.store(ph);
+        sensorOrientation_.store(orient);
+        updateDisplayRotation();
+    }
 
     // Register image listener so QML preview item re-renders on each frame.
     AImageReader_ImageListener listener{};
@@ -415,6 +467,73 @@ void CameraBridge::stopRecording() {
             emit recordingSaved(saved);
         }, Qt::QueuedConnection);
     });
+}
+
+void CameraBridge::capturePhoto(const QString& outputPath) {
+    if (!isReady() || isRecording() || !previewReader_) return;
+    // Grab the latest preview frame and save a QImage JPEG.
+    // Full RAW/DNG capture is a future enhancement.
+    AImage* image = nullptr;
+    if (g_mediandk.AImageReader_acquireLatestImage(previewReader_, &image) != AMEDIA_OK || !image) {
+        emit cameraError("capturePhoto: no frame available");
+        return;
+    }
+
+    int32_t width = 0, height = 0, numPlanes = 0;
+    g_mediandk.AImage_getWidth(image, &width);
+    g_mediandk.AImage_getHeight(image, &height);
+    g_mediandk.AImage_getNumberOfPlanes(image, &numPlanes);
+
+    uint8_t* yData = nullptr; int yLen = 0;
+    uint8_t* uData = nullptr; int uLen = 0;
+    uint8_t* vData = nullptr; int vLen = 0;
+    int32_t yStride = 0, uvStride = 0, uvPixelStride = 0;
+
+    if (numPlanes >= 3 && width > 0 && height > 0) {
+        g_mediandk.AImage_getPlaneData(image, 0, &yData, &yLen);
+        g_mediandk.AImage_getPlaneData(image, 1, &uData, &uLen);
+        g_mediandk.AImage_getPlaneData(image, 2, &vData, &vLen);
+        g_mediandk.AImage_getPlaneRowStride(image, 0, &yStride);
+        g_mediandk.AImage_getPlaneRowStride(image, 1, &uvStride);
+        g_mediandk.AImage_getPlanePixelStride(image, 1, &uvPixelStride);
+    }
+
+    QImage out;
+    if (yData && uData && vData) {
+        out = QImage(width, height, QImage::Format_RGB888);
+        for (int y = 0; y < height; ++y) {
+            const uint8_t* Y  = yData + y * yStride;
+            const uint8_t* U  = uData + (y / 2) * uvStride;
+            const uint8_t* V  = vData + (y / 2) * uvStride;
+            uchar* dst = out.scanLine(y);
+            for (int x = 0; x < width; ++x) {
+                int yv = Y[x];
+                int uv = U[(x / 2) * uvPixelStride] - 128;
+                int vv = V[(x / 2) * uvPixelStride] - 128;
+                dst[0] = (uchar)qBound(0, yv + (int)(1.370705f * vv), 255);
+                dst[1] = (uchar)qBound(0, yv - (int)(0.337633f * uv) - (int)(0.698001f * vv), 255);
+                dst[2] = (uchar)qBound(0, yv + (int)(1.732446f * uv), 255);
+                dst += 3;
+            }
+        }
+    }
+    g_mediandk.AImage_delete(image);
+
+    if (out.isNull()) { emit cameraError("capturePhoto: YUV conversion failed"); return; }
+
+    // Rotate the image to match display orientation.
+    int dr = displayRotation_.load();
+    if (dr != 0) {
+        QTransform t; t.rotate(dr);
+        out = out.transformed(t);
+    }
+
+    QString path = outputPath.isEmpty() ? defaultOutputPath().replace(".motioncam", ".jpg") : outputPath;
+    if (!out.save(path, "JPEG", 90)) {
+        emit cameraError("capturePhoto: failed to save " + path);
+        return;
+    }
+    emit photoSaved(path);
 }
 
 void CameraBridge::pollRecordingStats() {
