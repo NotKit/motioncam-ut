@@ -1,0 +1,7 @@
+<RCC>
+    <qresource prefix="/">
+        <file>Main.qml</file>
+        <file>CameraView.qml</file>
+        <file>RecordingOverlay.qml</file>
+    </qresource>
+</RCC>

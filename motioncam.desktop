@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=MotionCam
+Comment=RAW video camera using Camera2 NDK
+Exec=motioncam
+Icon=motioncam
+Terminal=false
+Type=Application
+X-Ubuntu-Touch=true

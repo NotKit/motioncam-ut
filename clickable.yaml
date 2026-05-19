@@ -1,0 +1,14 @@
+clickable_minimum_required: 8.8.0
+builder: cmake
+build_args:
+    - -DCMAKE_BUILD_TYPE=Release
+dependencies_target:
+    - libhybris-dev
+    - qtbase5-dev
+    - qtdeclarative5-dev
+    - libopencv-dev
+    - libzstd-dev
+    - libexiv2-dev
+    - libdlib-dev
+skip_review: true
+kill: motioncam
