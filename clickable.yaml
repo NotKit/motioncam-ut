@@ -10,5 +10,11 @@ dependencies_target:
     - libopencv-imgproc-dev
     - libopencv-photo-dev
     - libzstd-dev
+install_lib:
+    - libopencv_core.so*
+    - libopencv_imgproc.so*
+    - libopencv_photo.so*
+    - libzstd.so*
+    - libtbb.so*
 skip_review: true
 kill: motioncam
