@@ -20,11 +20,13 @@ Item {
     // Signal broadcast when a preset replaces _s wholesale so sliders re-read values.
     signal settingsReset()
 
+    // Defaults mirror PostProcessSettings C++ constructor so that the first
+    // serialised JSON matches what empty-JSON {} would produce.
     property var _s: ({
         "exposure":    0.0,
-        "shadows":     0.5,
+        "shadows":     1.0,
         "contrast":    0.5,
-        "whitePoint":  0.0,
+        "whitePoint":  1.0,
         "blacks":      0.0,
         "saturation":  1.05,
         "temperature": 5000,
@@ -58,13 +60,13 @@ Item {
 
     function _applyPreset(name) {
         if (name === "auto") {
-            root._s = { "exposure": 0.0, "shadows": 0.5, "contrast": 0.5,
-                "whitePoint": 0.0, "blacks": 0.0, "saturation": 1.05,
+            root._s = { "exposure": 0.0, "shadows": 1.0, "contrast": 0.5,
+                "whitePoint": 1.0, "blacks": 0.0, "saturation": 1.05,
                 "temperature": 5000, "tint": 0, "sharpen0": 2.0, "sharpen1": 2.0, "pop": 1.25 }
         } else {
-            root._s = { "exposure": 0.0, "shadows": 0.7, "contrast": 0.1,
-                "whitePoint": 0.0, "blacks": 0.0, "saturation": 0.7,
-                "temperature": -1, "tint": -1, "sharpen0": 1.0, "sharpen1": 1.0, "pop": 1.0 }
+            root._s = { "exposure": 0.0, "shadows": 2.0, "contrast": 0.1,
+                "whitePoint": 1.0, "blacks": 0.0, "saturation": 0.7,
+                "temperature": 5000, "tint": 0, "sharpen0": 1.0, "sharpen1": 1.0, "pop": 1.0 }
         }
         root.settingsReset()
         previewDebounce.restart()
@@ -231,9 +233,9 @@ Item {
                 Repeater {
                     model: [
                         { key: "exposure",   label: "Exposure",    from: -4.0, to: 4.0,   def: 0.0,  fmt: "ev"   },
-                        { key: "shadows",    label: "Shadows",     from: 0.0,  to: 1.0,   def: 0.5,  fmt: "pct"  },
+                        { key: "shadows",    label: "Shadows",     from: 0.01, to: 16.0,  def: 1.0,  fmt: "num2" },
                         { key: "contrast",   label: "Contrast",    from: 0.0,  to: 1.0,   def: 0.5,  fmt: "pct"  },
-                        { key: "whitePoint", label: "White Point", from: 0.0,  to: 1.0,   def: 0.0,  fmt: "pct"  },
+                        { key: "whitePoint", label: "White Point", from: 0.1,  to: 2.0,   def: 1.0,  fmt: "num2" },
                         { key: "blacks",     label: "Black Point", from: 0.0,  to: 0.05,  def: 0.0,  fmt: "pct2" },
                     ]
                     delegate: Column {
