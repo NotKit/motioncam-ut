@@ -3,5 +3,6 @@
         <file>Main.qml</file>
         <file>CameraView.qml</file>
         <file>RecordingOverlay.qml</file>
+        <file>PostProcessView.qml</file>
     </qresource>
 </RCC>

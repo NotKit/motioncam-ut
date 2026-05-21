@@ -17,19 +17,14 @@ Item {
     property string settingsJson: "{}"
     property int    previewToken: 0
     property int    thumbnailVersion: 0
-    // Estimated settings received from C++ (temperature/tint/shadows/exposure).
-    // AUTO button restores these; null until burstSettingsEstimated fires.
-    property var    _estimated: null
     // Signal broadcast when a preset replaces _s wholesale so sliders re-read values.
     signal settingsReset()
 
-    // Defaults mirror PostProcessSettings C++ constructor so that the first
-    // serialised JSON matches what empty-JSON {} would produce.
     property var _s: ({
         "exposure":    0.0,
-        "shadows":     1.0,
+        "shadows":     0.5,
         "contrast":    0.5,
-        "whitePoint":  1.0,
+        "whitePoint":  0.0,
         "blacks":      0.0,
         "saturation":  1.05,
         "temperature": 5000,
@@ -46,16 +41,9 @@ Item {
         return (delta > 0 ? "+" : "") + delta.toFixed(2) + " s"
     }
 
-    // High-quality scale=2 preview (after slider settles).
     function _requestPreview() {
         if (frames.length === 0) return
-        camera.requestBurstPreview(frames[selectedIndex].timestamp, root.settingsJson, 2)
-    }
-    // Fast scale=4 preview (while dragging a slider) — update settingsJson first.
-    function _requestFastPreview() {
-        if (frames.length === 0) return
-        root.settingsJson = JSON.stringify(root._s)
-        camera.requestBurstPreview(frames[selectedIndex].timestamp, root.settingsJson, 4)
+        camera.requestBurstPreview(frames[selectedIndex].timestamp, root.settingsJson)
     }
 
     function _formatValue(v, fmt) {
@@ -70,29 +58,15 @@ Item {
 
     function _applyPreset(name) {
         if (name === "auto") {
-            // Restore the estimated settings received from the C++ pipeline.
-            // Falls back to neutral defaults if estimation hasn't arrived yet.
-            var base = root._estimated !== null ? root._estimated : {}
-            root._s = {
-                "exposure":    base["exposure"]    !== undefined ? base["exposure"]    : 0.0,
-                "shadows":     base["shadows"]     !== undefined ? base["shadows"]     : 1.0,
-                "contrast":    base["contrast"]    !== undefined ? base["contrast"]    : 0.5,
-                "whitePoint":  base["whitePoint"]  !== undefined ? base["whitePoint"]  : 1.0,
-                "blacks":      base["blacks"]      !== undefined ? base["blacks"]      : 0.0,
-                "saturation":  base["saturation"]  !== undefined ? base["saturation"]  : 1.05,
-                "temperature": base["temperature"] !== undefined ? base["temperature"] : 5000,
-                "tint":        base["tint"]        !== undefined ? base["tint"]        : 0,
-                "sharpen0":    base["sharpen0"]    !== undefined ? base["sharpen0"]    : 2.0,
-                "sharpen1":    base["sharpen1"]    !== undefined ? base["sharpen1"]    : 2.0,
-                "pop":         base["pop"]         !== undefined ? base["pop"]         : 1.25,
-            }
+            root._s = { "exposure": 0.0, "shadows": 0.5, "contrast": 0.5,
+                "whitePoint": 0.0, "blacks": 0.0, "saturation": 1.05,
+                "temperature": 5000, "tint": 0, "sharpen0": 2.0, "sharpen1": 2.0, "pop": 1.25 }
         } else {
-            root._s = { "exposure": 0.0, "shadows": 2.0, "contrast": 0.1,
-                "whitePoint": 1.0, "blacks": 0.0, "saturation": 0.7,
-                "temperature": 5000, "tint": 0, "sharpen0": 1.0, "sharpen1": 1.0, "pop": 1.0 }
+            root._s = { "exposure": 0.0, "shadows": 0.7, "contrast": 0.1,
+                "whitePoint": 0.0, "blacks": 0.0, "saturation": 0.7,
+                "temperature": -1, "tint": -1, "sharpen0": 1.0, "sharpen1": 1.0, "pop": 1.0 }
         }
         root.settingsReset()
-        root.settingsJson = JSON.stringify(root._s)
         previewDebounce.restart()
     }
 
@@ -103,74 +77,19 @@ Item {
         id: previewArea
         anchors { top: parent.top; left: parent.left; right: parent.right }
         height: Math.min(parent.width * 3 / 4, parent.height * 0.50)
-        clip: true
 
-        Flickable {
-            id: previewFlick
+        Image {
+            id: previewImg
             anchors.fill: parent
-            // Pan only when zoomed in; single-touch drag conflicts with slider scroll otherwise.
-            interactive: zoomLevel > 1.01
-            contentWidth:  width  * zoomLevel
-            contentHeight: height * zoomLevel
-            property real zoomLevel: 1.0
-
-            Image {
-                id: previewImg
-                width:  previewFlick.contentWidth
-                height: previewFlick.contentHeight
-                fillMode: Image.PreserveAspectFit
-                source: previewToken > 0 ? "image://burst/preview?v=" + previewToken : ""
-                // BurstPreviewProvider returns an already-decoded QImage from memory.
-                // Synchronous load is instant and prevents the blank-frame flicker that
-                // occurs when asynchronous=true clears the display before the new image arrives.
-                asynchronous: false
-                cache: false
-            }
-
-            PinchArea {
-                width:  Math.max(previewFlick.width,  previewFlick.contentWidth)
-                height: Math.max(previewFlick.height, previewFlick.contentHeight)
-                property real startZoom: 1.0
-
-                onPinchStarted: startZoom = previewFlick.zoomLevel
-                onPinchUpdated: {
-                    var newZoom = Math.max(1.0, Math.min(4.0, startZoom * pinch.scale))
-                    previewFlick.zoomLevel = newZoom
-                    var dx = pinch.center.x - pinch.previousCenter.x
-                    var dy = pinch.center.y - pinch.previousCenter.y
-                    previewFlick.contentX = Math.max(0, Math.min(
-                        previewFlick.contentX - dx,
-                        previewFlick.contentWidth - previewFlick.width))
-                    previewFlick.contentY = Math.max(0, Math.min(
-                        previewFlick.contentY - dy,
-                        previewFlick.contentHeight - previewFlick.height))
-                }
-                onPinchFinished: {
-                    if (previewFlick.zoomLevel < 1.05) {
-                        previewFlick.zoomLevel = 1.0
-                        previewFlick.contentX  = 0
-                        previewFlick.contentY  = 0
-                    }
-                }
-
-                MouseArea {
-                    anchors.fill: parent
-                    onDoubleClicked: {
-                        if (previewFlick.zoomLevel > 1.05) {
-                            previewFlick.zoomLevel = 1.0
-                            previewFlick.contentX  = 0
-                            previewFlick.contentY  = 0
-                        } else {
-                            previewFlick.zoomLevel = 2.0
-                        }
-                    }
-                }
-            }
+            fillMode: Image.PreserveAspectFit
+            source: previewToken > 0 ? "image://burst/preview?v=" + previewToken : ""
+            asynchronous: true
+            cache: false
         }
 
         QQC2.BusyIndicator {
             anchors.centerIn: parent
-            running: previewToken === 0
+            running: previewImg.status === Image.Loading
         }
 
         // Back / cancel button (top-left)
@@ -178,7 +97,6 @@ Item {
             anchors { top: parent.top; left: parent.left; margins: units.gu(1) }
             width: units.gu(4.5); height: width; radius: width / 2
             color: "#88000000"
-            z: 1
             Label {
                 anchors.centerIn: parent
                 text: "‹"
@@ -279,7 +197,7 @@ Item {
 
             MouseArea {
                 anchors.fill: parent
-                onClicked: { root.selectedIndex = index; root._requestFastPreview(); previewDebounce.restart() }
+                onClicked: { root.selectedIndex = index; root._requestPreview() }
             }
 
             Component.onCompleted: camera.requestBurstThumbnail(frame.timestamp)
@@ -313,9 +231,9 @@ Item {
                 Repeater {
                     model: [
                         { key: "exposure",   label: "Exposure",    from: -4.0, to: 4.0,   def: 0.0,  fmt: "ev"   },
-                        { key: "shadows",    label: "Shadows",     from: 0.01, to: 16.0,  def: 1.0,  fmt: "num2" },
+                        { key: "shadows",    label: "Shadows",     from: 0.0,  to: 1.0,   def: 0.5,  fmt: "pct"  },
                         { key: "contrast",   label: "Contrast",    from: 0.0,  to: 1.0,   def: 0.5,  fmt: "pct"  },
-                        { key: "whitePoint", label: "White Point", from: 0.1,  to: 2.0,   def: 1.0,  fmt: "num2" },
+                        { key: "whitePoint", label: "White Point", from: 0.0,  to: 1.0,   def: 0.0,  fmt: "pct"  },
                         { key: "blacks",     label: "Black Point", from: 0.0,  to: 0.05,  def: 0.0,  fmt: "pct2" },
                     ]
                     delegate: Column {
@@ -333,7 +251,7 @@ Item {
                         QQC2.Slider {
                             id: sl; width: parent.width - units.gu(2)
                             from: cfg.from; to: cfg.to; value: parent.displayValue
-                            onMoved: { root._s[cfg.key] = value; root._requestFastPreview(); previewDebounce.restart() }
+                            onMoved: { root._s[cfg.key] = value; previewDebounce.restart() }
                         }
                     }
                 }
@@ -361,7 +279,7 @@ Item {
                             id: sl2; width: parent.width - units.gu(2)
                             from: cfg.from; to: cfg.to
                             value: cfg.key in root._s ? root._s[cfg.key] : cfg.def
-                            onMoved: { root._s[cfg.key] = value; root._requestFastPreview(); previewDebounce.restart() }
+                            onMoved: { root._s[cfg.key] = value; previewDebounce.restart() }
                         }
                     }
                 }
@@ -416,7 +334,7 @@ Item {
                             id: sl3; width: parent.width - units.gu(2)
                             from: cfg.from; to: cfg.to
                             value: cfg.key in root._s ? root._s[cfg.key] : cfg.def
-                            onMoved: { root._s[cfg.key] = value; root._requestFastPreview(); previewDebounce.restart() }
+                            onMoved: { root._s[cfg.key] = value; previewDebounce.restart() }
                         }
                     }
                 }
@@ -446,7 +364,7 @@ Item {
                             id: sl4; width: parent.width - units.gu(2)
                             from: cfg.from; to: cfg.to
                             value: cfg.key in root._s ? root._s[cfg.key] : cfg.def
-                            onMoved: { root._s[cfg.key] = value; root._requestFastPreview(); previewDebounce.restart() }
+                            onMoved: { root._s[cfg.key] = value; previewDebounce.restart() }
                         }
                     }
                 }
@@ -511,26 +429,13 @@ Item {
         target: camera
         onBurstPreviewReady:   { root.previewToken++ }
         onBurstThumbnailReady: { root.thumbnailVersion++ }
-        onBurstSettingsEstimated: function(settingsJson) {
-            var parsed = JSON.parse(settingsJson)
-            root._estimated = parsed
-            // Apply estimated temperature, tint, shadows and exposure immediately
-            // so the initial preview uses the correct white balance and tone.
-            if (parsed["temperature"] !== undefined) root._s["temperature"] = parsed["temperature"]
-            if (parsed["tint"]        !== undefined) root._s["tint"]        = parsed["tint"]
-            if (parsed["shadows"]     !== undefined) root._s["shadows"]     = parsed["shadows"]
-            if (parsed["exposure"]    !== undefined) root._s["exposure"]    = parsed["exposure"]
-            root.settingsReset()
-            root.settingsJson = JSON.stringify(root._s)
-            previewDebounce.restart()
-        }
     }
 
     Timer {
         id: previewDebounce
         interval: 300
         onTriggered: {
-            // settingsJson was already updated by _requestFastPreview; just request LARGE pass.
+            root.settingsJson = JSON.stringify(root._s)
             root._requestPreview()
         }
     }
@@ -539,16 +444,11 @@ Item {
     function onFramesReady(frameList) {
         root.previewToken     = 0
         root.thumbnailVersion = 0
-        // Do NOT clear _estimated here: burstSettingsEstimated fires just before
-        // burstFramesReady (same invokeMethod call) so it's already set by now.
         root.frames           = frameList
         root.selectedIndex    = 0
         for (var i = 0; i < frameList.length; ++i) {
             if (frameList[i].sharpest) { root.selectedIndex = i; break }
         }
-        // Fast scale=4 preview immediately; debounce (started by burstSettingsEstimated)
-        // will fire 300 ms later and upgrade to scale=2.
-        root._requestFastPreview()
-        if (!previewDebounce.running) previewDebounce.restart()
+        root._requestPreview()
     }
 }

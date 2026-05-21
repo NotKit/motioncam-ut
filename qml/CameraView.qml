@@ -98,6 +98,9 @@ Item {
             savedLabel.visible = true
             savedLabelTimer.restart()
         }
+        onProcessingStarted: { processingOverlay.visible = true }
+        onProcessingStopped: { processingOverlay.visible = false }
+        onProcessingProgress: function(percent) { processingBar.value = percent }
     }
 
     // Shutter flash
@@ -114,6 +117,33 @@ Item {
         }
     }
 
+    // Processing overlay
+    Rectangle {
+        id: processingOverlay
+        anchors.centerIn: parent
+        width: units.gu(22); height: units.gu(6)
+        radius: units.gu(1)
+        color: "#CC000000"
+        visible: false
+
+        Column {
+            anchors.centerIn: parent
+            spacing: units.gu(0.5)
+            Label {
+                anchors.horizontalCenter: parent.horizontalCenter
+                text: "Processing…"
+                color: "white"
+                font.pixelSize: units.gu(1.6)
+            }
+            QQC2.ProgressBar {
+                id: processingBar
+                anchors.horizontalCenter: parent.horizontalCenter
+                width: units.gu(18)
+                from: 0; to: 100; value: 0
+            }
+        }
+    }
+
     // Mode strip
     Row {
         id: modeStrip
@@ -122,7 +152,7 @@ Item {
         visible: !camera.recording
 
         Repeater {
-            model: ["VIDEO", "PHOTO", "RAW"]
+            model: ["VIDEO", "PHOTO", "BURST"]
             Label {
                 text: modelData
                 color: modelData === currentMode ? "#FFD700" : "white"
@@ -143,19 +173,36 @@ Item {
         anchors { bottom: parent.bottom; left: parent.left; right: parent.right }
         height: units.gu(14)
 
-        // Thumbnail placeholder (left)
+        // Thumbnail (left) — shows last captured photo; opens it on tap
         Rectangle {
             id: thumbnailBtn
             width: units.gu(6.5); height: width
             radius: units.gu(0.8)
             color: "#30ffffff"
             border.color: "white"; border.width: 1
+            clip: true
             anchors { left: parent.left; leftMargin: units.gu(3); verticalCenter: parent.verticalCenter }
+
+            Image {
+                id: thumbImage
+                anchors.fill: parent
+                source: camera.lastPhotoPath.length > 0 ? ("file://" + camera.lastPhotoPath) : ""
+                fillMode: Image.PreserveAspectCrop
+                visible: status === Image.Ready
+            }
             Label {
                 anchors.centerIn: parent
                 text: "⊞"
                 font.pixelSize: units.gu(3)
                 color: "white"
+                visible: thumbImage.status !== Image.Ready
+            }
+            MouseArea {
+                anchors.fill: parent
+                onClicked: {
+                    if (camera.lastPhotoPath.length > 0)
+                        Qt.openUrlExternally("file://" + camera.lastPhotoPath)
+                }
             }
         }
 
@@ -180,8 +227,8 @@ Item {
                 width: parent.width - units.gu(1.2)
                 height: width
                 radius: width / 2
-                color: currentMode === "VIDEO" ? "#E53935"
-                     : currentMode === "RAW"   ? "#29B6F6"
+                color: currentMode === "VIDEO"  ? "#E53935"
+                     : currentMode === "BURST" ? "#26C6DA"
                      : "white"
 
                 Behavior on color { ColorAnimation { duration: 150 } }
@@ -196,6 +243,8 @@ Item {
                         if (currentMode === "VIDEO") {
                             if (camera.recording) camera.stopRecording()
                             else                   camera.startRecording()
+                        } else if (currentMode === "BURST") {
+                            camera.acquireBurstFrames()
                         } else {
                             camera.capturePhoto()
                         }
@@ -213,10 +262,11 @@ Item {
             }
         }
 
-        // Camera switch button (right)
+        // Camera switch button (right) — only shown when a front camera exists
         QQC2.RoundButton {
             id: switchBtn
             width: units.gu(6.5); height: width
+            visible: camera.hasFrontCamera
             anchors { right: parent.right; rightMargin: units.gu(3); verticalCenter: parent.verticalCenter }
             text: "⟳"
             font.pixelSize: units.gu(3)
@@ -232,7 +282,7 @@ Item {
                 horizontalAlignment: Text.AlignHCenter
                 verticalAlignment: Text.AlignVCenter
             }
-            onClicked: {} // future: switch front/back
+            onClicked: camera.switchCamera()
         }
     }
 
@@ -342,5 +392,26 @@ Item {
         opacity: 0
         Behavior on opacity { NumberAnimation { duration: 200 } }
         Timer { id: focusRingTimer; interval: 1500; onTriggered: focusRing.opacity = 0 }
+    }
+
+    // ── Burst post-process overlay ────────────────────────────────────────────
+    PostProcessView {
+        id: postProcessView
+        anchors.fill: parent
+        visible: false
+        z: 10
+
+        onClosed: {
+            visible = false
+            frames = []
+        }
+    }
+
+    Connections {
+        target: camera
+        onBurstFramesReady: function(frameList) {
+            postProcessView.onFramesReady(frameList)
+            postProcessView.visible = true
+        }
     }
 }

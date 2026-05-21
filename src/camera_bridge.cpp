@@ -1,13 +1,21 @@
 // Qt headers first — they must be parsed before EGL/GLES on Linux (X11 macros clash).
 #include <QOpenGLFramebufferObject>
-#include <QImage>
-#include <QTransform>
 #include <QStandardPaths>
 #include <QDateTime>
 #include <QDir>
 #include <QtConcurrent/QtConcurrent>
 
 #include "camera_bridge.h"
+
+#ifdef HAVE_IMAGE_PROCESSOR
+#include <motioncam/MotionCam.h>
+#include <motioncam/RawBufferManager.h>
+#include <motioncam/RawContainer.h>
+#include <motioncam/RawImageBuffer.h>
+#include <motioncam/ImageProcessor.h>
+#include <motioncam/Settings.h>
+#include <json11/json11.hpp>
+#endif
 
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
@@ -203,6 +211,47 @@ private:
     PFNGLEGLIMAGETARGETTEXTURE2DOESPROC    pfn_glEGLImageTarget_ = nullptr;
 };
 
+// ─── ImageProcessorProgress implementation ───────────────────────────────────
+#ifdef HAVE_IMAGE_PROCESSOR
+class BridgeProgressListener : public motioncam::ImageProcessorProgress {
+public:
+    BridgeProgressListener(CameraBridge* bridge, const QString& jpegPath)
+        : bridge_(bridge), jpegPath_(jpegPath) {}
+
+    std::string onPreviewSaved(const std::string& /*path*/) const override {
+        return ""; // skip preview file
+    }
+
+    bool onProgressUpdate(int progress) const override {
+        QMetaObject::invokeMethod(bridge_, [b = bridge_, progress]() {
+            emit b->processingProgress(progress);
+        }, Qt::QueuedConnection);
+        return true;
+    }
+
+    void onCompleted() const override {
+        QString path = jpegPath_;
+        bridge_->setLastPhotoPath(path);
+        QMetaObject::invokeMethod(bridge_, [b = bridge_, path]() {
+            emit b->processingStopped();
+            emit b->photoSaved(path);
+        }, Qt::QueuedConnection);
+    }
+
+    void onError(const std::string& error) const override {
+        QString msg = QString::fromStdString(error);
+        QMetaObject::invokeMethod(bridge_, [b = bridge_, msg]() {
+            emit b->processingStopped();
+            emit b->cameraError("Processing failed: " + msg);
+        }, Qt::QueuedConnection);
+    }
+
+private:
+    CameraBridge* bridge_;
+    QString jpegPath_;
+};
+#endif
+
 // ─── CameraBridge ─────────────────────────────────────────────────────────────
 
 static constexpr int kPreviewWidth  = 1280;
@@ -216,8 +265,45 @@ CameraBridge::CameraBridge(QQuickItem* parent)
 }
 
 CameraBridge::~CameraBridge() {
-    if (cameraSession_) cameraSession_->closeCamera();
-    if (previewReader_) g_mediandk.AImageReader_delete(previewReader_);
+    stopCameraSession();
+}
+
+void CameraBridge::stopCameraSession() {
+    ready_.store(false);
+    if (cameraSession_) {
+        cameraSession_->closeCamera();
+        cameraSession_.reset();
+    }
+    if (previewReader_) {
+        g_mediandk.AImageReader_delete(previewReader_);
+        previewReader_ = nullptr;
+    }
+    cameraDesc_.reset();
+    // Flush rolling buffer: old buffers are sized for the previous camera's
+    // resolution.  The new camera will allocate correctly-sized ones via
+    // RawImageConsumer::setupBuffers().
+    motioncam::RawBufferManager::get().reset();
+}
+
+void CameraBridge::switchCamera() {
+    if (isRecording() || !hasFrontCamera_.load()) return;
+    // Toggle between back (ACAMERA_LENS_FACING_BACK=1) and front (FRONT=0).
+    int cur = lensFacingPref_.load();
+    lensFacingPref_.store(cur == ACAMERA_LENS_FACING_BACK
+        ? ACAMERA_LENS_FACING_FRONT
+        : ACAMERA_LENS_FACING_BACK);
+    QMetaObject::invokeMethod(this, [this]() { emit readyChanged(); }, Qt::QueuedConnection);
+    QtConcurrent::run([this]() {
+        stopCameraSession();
+        initCamera();
+    });
+}
+
+void CameraBridge::setLastPhotoPath(const QString& path) {
+    { QMutexLocker lk(&lastPhotoMutex_); lastPhotoPath_ = path; }
+    QMetaObject::invokeMethod(this, [this]() {
+        emit lastPhotoPathChanged();
+    }, Qt::QueuedConnection);
 }
 
 QQuickFramebufferObject::Renderer* CameraBridge::createRenderer() const {
@@ -286,17 +372,25 @@ void CameraBridge::initCamera() {
         return;
     }
 
-    // Select the back camera.
+    // Select camera matching lensFacingPref_ (default: back); also detect front camera.
     auto cameras = sessionManager_->getSupportedCameras();
+    int wantFacing = lensFacingPref_.load();
+    bool foundFront = false;
     for (const auto& id : cameras) {
         auto desc = sessionManager_->getCameraDescription(id);
-        if (desc && desc->lensFacing == ACAMERA_LENS_FACING_BACK) {
+        if (!desc) continue;
+        if (desc->lensFacing == ACAMERA_LENS_FACING_FRONT) foundFront = true;
+        if ((int)desc->lensFacing == wantFacing && !cameraDesc_)
             cameraDesc_ = desc;
-            break;
-        }
     }
     if (!cameraDesc_ && !cameras.empty())
         cameraDesc_ = sessionManager_->getCameraDescription(cameras.front());
+    bool prevHasFront = hasFrontCamera_.exchange(foundFront);
+    if (prevHasFront != foundFront) {
+        QMetaObject::invokeMethod(this, [this]() {
+            emit hasFrontCameraChanged();
+        }, Qt::QueuedConnection);
+    }
 
     if (!cameraDesc_) {
         QMetaObject::invokeMethod(this, [this]() {
@@ -406,7 +500,17 @@ void CameraBridge::initCamera() {
 }
 
 QString CameraBridge::defaultOutputPath() const {
+    // Used for video recordings → Movies folder.
     QString dir = QStandardPaths::writableLocation(QStandardPaths::MoviesLocation)
+                  + "/MotionCam";
+    QDir().mkpath(dir);
+    QString ts = QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss");
+    return dir + "/motioncam_" + ts + ".motioncam";
+}
+
+QString CameraBridge::defaultPhotoPath() const {
+    // Used for photo/raw captures → Pictures folder.
+    QString dir = QStandardPaths::writableLocation(QStandardPaths::PicturesLocation)
                   + "/MotionCam";
     QDir().mkpath(dir);
     QString ts = QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss");
@@ -470,70 +574,36 @@ void CameraBridge::stopRecording() {
 }
 
 void CameraBridge::capturePhoto(const QString& outputPath) {
-    if (!isReady() || isRecording() || !previewReader_) return;
-    // Grab the latest preview frame and save a QImage JPEG.
-    // Full RAW/DNG capture is a future enhancement.
-    AImage* image = nullptr;
-    if (g_mediandk.AImageReader_acquireLatestImage(previewReader_, &image) != AMEDIA_OK || !image) {
-        emit cameraError("capturePhoto: no frame available");
+    if (!isReady() || isRecording() || !cameraSession_) return;
+    if (!isRawCapable()) {
+        emit cameraError("RAW capture not supported on this device");
         return;
     }
-
-    int32_t width = 0, height = 0, numPlanes = 0;
-    g_mediandk.AImage_getWidth(image, &width);
-    g_mediandk.AImage_getHeight(image, &height);
-    g_mediandk.AImage_getNumberOfPlanes(image, &numPlanes);
-
-    uint8_t* yData = nullptr; int yLen = 0;
-    uint8_t* uData = nullptr; int uLen = 0;
-    uint8_t* vData = nullptr; int vLen = 0;
-    int32_t yStride = 0, uvStride = 0, uvPixelStride = 0;
-
-    if (numPlanes >= 3 && width > 0 && height > 0) {
-        g_mediandk.AImage_getPlaneData(image, 0, &yData, &yLen);
-        g_mediandk.AImage_getPlaneData(image, 1, &uData, &uLen);
-        g_mediandk.AImage_getPlaneData(image, 2, &vData, &vLen);
-        g_mediandk.AImage_getPlaneRowStride(image, 0, &yStride);
-        g_mediandk.AImage_getPlaneRowStride(image, 1, &uvStride);
-        g_mediandk.AImage_getPlanePixelStride(image, 1, &uvPixelStride);
+    QString path = outputPath.isEmpty() ? defaultPhotoPath() : outputPath;
+    {
+        std::lock_guard<std::mutex> lk(captureOutputMutex_);
+        captureOutputPath_ = path;
+        captureSkipProcessing_ = false;
     }
+    motioncam::PostProcessSettings settings;
+    cameraSession_->captureHdr(1, settings, path.toStdString());
+}
 
-    QImage out;
-    if (yData && uData && vData) {
-        out = QImage(width, height, QImage::Format_RGB888);
-        for (int y = 0; y < height; ++y) {
-            const uint8_t* Y  = yData + y * yStride;
-            const uint8_t* U  = uData + (y / 2) * uvStride;
-            const uint8_t* V  = vData + (y / 2) * uvStride;
-            uchar* dst = out.scanLine(y);
-            for (int x = 0; x < width; ++x) {
-                int yv = Y[x];
-                int uv = U[(x / 2) * uvPixelStride] - 128;
-                int vv = V[(x / 2) * uvPixelStride] - 128;
-                dst[0] = (uchar)qBound(0, yv + (int)(1.370705f * vv), 255);
-                dst[1] = (uchar)qBound(0, yv - (int)(0.337633f * uv) - (int)(0.698001f * vv), 255);
-                dst[2] = (uchar)qBound(0, yv + (int)(1.732446f * uv), 255);
-                dst += 3;
-            }
-        }
-    }
-    g_mediandk.AImage_delete(image);
 
-    if (out.isNull()) { emit cameraError("capturePhoto: YUV conversion failed"); return; }
-
-    // Rotate the image to match display orientation.
-    int dr = displayRotation_.load();
-    if (dr != 0) {
-        QTransform t; t.rotate(dr);
-        out = out.transformed(t);
-    }
-
-    QString path = outputPath.isEmpty() ? defaultOutputPath().replace(".motioncam", ".jpg") : outputPath;
-    if (!out.save(path, "JPEG", 90)) {
-        emit cameraError("capturePhoto: failed to save " + path);
+void CameraBridge::captureRaw(const QString& outputPath) {
+    if (!isReady() || isRecording() || !cameraSession_) return;
+    if (!isRawCapable()) {
+        emit cameraError("RAW capture not supported on this device");
         return;
     }
-    emit photoSaved(path);
+    QString path = outputPath.isEmpty() ? defaultPhotoPath() : outputPath;
+    {
+        std::lock_guard<std::mutex> lk(captureOutputMutex_);
+        captureOutputPath_ = path;
+        captureSkipProcessing_ = true;
+    }
+    motioncam::PostProcessSettings settings;
+    cameraSession_->captureHdr(1, settings, path.toStdString());
 }
 
 void CameraBridge::pollRecordingStats() {
@@ -611,11 +681,60 @@ void CameraBridge::onCameraAutoExposureStateChanged(
 void CameraBridge::onCameraHdrImageCaptureProgress(int /*progress*/) {}
 
 void CameraBridge::onCameraHdrImageCaptureCompleted() {
-    fprintf(stderr, "CameraBridge: HDR capture completed\n");
+    QString motioncamPath;
+    bool skipProcessing = false;
+    {
+        std::lock_guard<std::mutex> lk(captureOutputMutex_);
+        motioncamPath = captureOutputPath_;
+        skipProcessing = captureSkipProcessing_;
+    }
+
+    if (skipProcessing) {
+        // RAW capture: deliver container as-is, no JPEG processing.
+        QMetaObject::invokeMethod(this, [this, motioncamPath]() {
+            emit photoSaved(motioncamPath);
+        }, Qt::QueuedConnection);
+        return;
+    }
+
+#ifdef HAVE_IMAGE_PROCESSOR
+    QString jpegPath = motioncamPath;
+    jpegPath.replace(".motioncam", ".jpg");
+
+    QMetaObject::invokeMethod(this, [this]() {
+        emit processingStarted();
+    }, Qt::QueuedConnection);
+
+    QtConcurrent::run([this, motioncamPath, jpegPath]() {
+        BridgeProgressListener listener(this, jpegPath);
+        try {
+            auto container = motioncam::RawBufferManager::get().popPendingContainer();
+            if (container) {
+                motioncam::MotionCam::ProcessImage(*container,
+                    jpegPath.toStdString(), listener);
+            } else {
+                motioncam::MotionCam::ProcessImage(motioncamPath.toStdString(),
+                    jpegPath.toStdString(), listener);
+            }
+        } catch (const std::exception& e) {
+            QString msg = QString::fromStdString(e.what());
+            QMetaObject::invokeMethod(this, [this, msg]() {
+                emit processingStopped();
+                emit cameraError("Processing failed: " + msg);
+            }, Qt::QueuedConnection);
+        }
+    });
+#else
+    QMetaObject::invokeMethod(this, [this, motioncamPath]() {
+        emit photoSaved(motioncamPath);
+    }, Qt::QueuedConnection);
+#endif
 }
 
 void CameraBridge::onCameraHdrImageCaptureFailed() {
-    fprintf(stderr, "CameraBridge: HDR capture failed\n");
+    QMetaObject::invokeMethod(this, [this]() {
+        emit cameraError("RAW capture failed");
+    }, Qt::QueuedConnection);
 }
 
 void CameraBridge::onMemoryAdjusting() {
@@ -631,4 +750,235 @@ void CameraBridge::onMemoryStable() {
 void CameraBridge::onPreviewGenerated(const void* /*data*/, const int /*len*/,
                                       const int /*width*/, const int /*height*/) {
     // Halide raw preview — not used in MVP (setupForRawPreview = false).
+}
+
+// ── Burst post-process ────────────────────────────────────────────────────────
+
+#ifdef HAVE_IMAGE_PROCESSOR
+
+template<typename HalideBuf>
+static QImage halideToQImage(const HalideBuf& buf) {
+    int w = buf.width(), h = buf.height();
+    QImage img(w, h, QImage::Format_RGB888);
+    for (int y = 0; y < h; ++y) {
+        uchar* row = img.scanLine(y);
+        for (int x = 0; x < w; ++x) {
+            row[x*3+0] = buf(x, y, 0);
+            row[x*3+1] = buf(x, y, 1);
+            row[x*3+2] = buf(x, y, 2);
+        }
+    }
+    return img;
+}
+
+static motioncam::PostProcessSettings settingsFromJson(const QString& json) {
+    std::string err;
+    auto j = json11::Json::parse(json.toStdString(), err);
+    return err.empty() ? motioncam::PostProcessSettings(j)
+                       : motioncam::PostProcessSettings();
+}
+
+#endif // HAVE_IMAGE_PROCESSOR
+
+void CameraBridge::acquireBurstFrames() {
+#ifdef HAVE_IMAGE_PROCESSOR
+    if (!cameraDesc_) return;
+
+    std::unique_ptr<motioncam::RawBufferManager::LockedBuffers> locked;
+    {
+        std::lock_guard<std::mutex> lk(burstMutex_);
+        locked = motioncam::RawBufferManager::get().consumeAllBuffers();
+        burstBuffers_ = std::move(locked);
+        locked = nullptr;
+    }
+
+    // Build frame list and measure sharpness on a background thread.
+    QtConcurrent::run([this]() {
+        std::vector<std::shared_ptr<motioncam::RawImageBuffer>> frames;
+        {
+            std::lock_guard<std::mutex> lk(burstMutex_);
+            if (!burstBuffers_) return;
+            frames = burstBuffers_->getBuffers();
+        }
+        if (frames.empty()) return;
+
+        QVariantList list;
+        int sharpestIdx = 0;
+        double bestSharpness = -1.0;
+
+        for (int i = 0; i < (int)frames.size(); ++i) {
+            const auto& f = frames[i];
+            double sharpness = 0.0;
+            try {
+                sharpness = motioncam::ImageProcessor::measureSharpness(
+                    cameraDesc_->metadata, *f);
+            } catch (...) {}
+
+            if (sharpness > bestSharpness) {
+                bestSharpness = sharpness;
+                sharpestIdx = i;
+            }
+
+            QVariantMap entry;
+            entry["timestamp"]    = (qlonglong)f->metadata.timestampNs;
+            entry["iso"]          = (int)f->metadata.iso;
+            entry["exposureNs"]   = (qlonglong)f->metadata.exposureTime;
+            entry["sharpness"]    = sharpness;
+            list.append(entry);
+        }
+
+        // Mark the sharpest frame
+        if (!list.isEmpty()) {
+            QVariantMap m = list[sharpestIdx].toMap();
+            m["sharpest"] = true;
+            list[sharpestIdx] = m;
+        }
+
+        QMetaObject::invokeMethod(this, [this, list]() {
+            emit burstFramesReady(list);
+        }, Qt::QueuedConnection);
+    });
+#else
+    QMetaObject::invokeMethod(this, [this]() {
+        emit burstFramesReady(QVariantList{});
+    }, Qt::QueuedConnection);
+#endif
+}
+
+void CameraBridge::requestBurstThumbnail(qint64 timestamp) {
+#ifdef HAVE_IMAGE_PROCESSOR
+    if (!cameraDesc_ || !burstProvider_) return;
+    QtConcurrent::run([this, timestamp]() {
+        std::shared_ptr<motioncam::RawImageBuffer> frame;
+        {
+            std::lock_guard<std::mutex> lk(burstMutex_);
+            if (!burstBuffers_) return;
+            for (auto& f : burstBuffers_->getBuffers())
+                if (f->metadata.timestampNs == timestamp) { frame = f; break; }
+        }
+        if (!frame) return;
+        try {
+            motioncam::PostProcessSettings settings;
+            auto buf = motioncam::ImageProcessor::createPreview(
+                *frame, 8, cameraDesc_->metadata, settings);
+            QImage img = halideToQImage(buf);
+            burstProvider_->setThumbnail(timestamp, img);
+            QMetaObject::invokeMethod(this, [this, timestamp]() {
+                emit burstThumbnailReady(timestamp);
+            }, Qt::QueuedConnection);
+        } catch (...) {}
+    });
+#endif
+}
+
+void CameraBridge::requestBurstPreview(qint64 timestamp, const QString& settingsJson) {
+#ifdef HAVE_IMAGE_PROCESSOR
+    if (!cameraDesc_ || !burstProvider_) return;
+    QtConcurrent::run([this, timestamp, settingsJson]() {
+        std::shared_ptr<motioncam::RawImageBuffer> frame;
+        {
+            std::lock_guard<std::mutex> lk(burstMutex_);
+            if (!burstBuffers_) return;
+            for (auto& f : burstBuffers_->getBuffers())
+                if (f->metadata.timestampNs == timestamp) { frame = f; break; }
+        }
+        if (!frame) return;
+        try {
+            auto settings = settingsFromJson(settingsJson);
+            auto buf = motioncam::ImageProcessor::createPreview(
+                *frame, 4, cameraDesc_->metadata, settings);
+            QImage img = halideToQImage(buf);
+            burstProvider_->setPreview(img);
+            QMetaObject::invokeMethod(this, [this]() {
+                emit burstPreviewReady();
+            }, Qt::QueuedConnection);
+        } catch (...) {}
+    });
+#endif
+}
+
+void CameraBridge::saveBurstFrame(qint64 timestamp, int numFrames, const QString& settingsJson) {
+#ifdef HAVE_IMAGE_PROCESSOR
+    if (!cameraDesc_) return;
+    QString outputPath = defaultPhotoPath();
+    outputPath.replace(".motioncam", ".jpg");
+
+    QMetaObject::invokeMethod(this, [this]() {
+        emit processingStarted();
+    }, Qt::QueuedConnection);
+
+    QtConcurrent::run([this, timestamp, numFrames, settingsJson, outputPath]() {
+        try {
+            auto settings = settingsFromJson(settingsJson);
+            settings.jpegQuality = 95;
+
+            // Gather all locked frames acquired at shutter press
+            std::vector<std::shared_ptr<motioncam::RawImageBuffer>> allFrames;
+            {
+                std::lock_guard<std::mutex> lk(burstMutex_);
+                if (burstBuffers_)
+                    allFrames = burstBuffers_->getBuffers();
+            }
+            if (allFrames.empty())
+                throw std::runtime_error("No burst frames available");
+
+            // Find the reference frame (selected in filmstrip)
+            int refIdx = (int)allFrames.size() - 1;
+            for (int i = 0; i < (int)allFrames.size(); ++i) {
+                if (allFrames[i]->metadata.timestampNs == (int64_t)timestamp) {
+                    refIdx = i; break;
+                }
+            }
+
+            // Select up to numFrames frames closest to the reference (mirrors save() logic)
+            std::vector<std::shared_ptr<motioncam::RawImageBuffer>> selected;
+            selected.push_back(allFrames[refIdx]);
+            int left = refIdx - 1, right = refIdx + 1;
+            int remaining = numFrames - 1;
+            while (remaining > 0 && (left >= 0 || right < (int)allFrames.size())) {
+                int64_t ld = (left  >= 0)
+                    ? std::abs(allFrames[left]->metadata.timestampNs  - allFrames[refIdx]->metadata.timestampNs)
+                    : std::numeric_limits<int64_t>::max();
+                int64_t rd = (right < (int)allFrames.size())
+                    ? std::abs(allFrames[right]->metadata.timestampNs - allFrames[refIdx]->metadata.timestampNs)
+                    : std::numeric_limits<int64_t>::max();
+                if (ld <= rd) { selected.push_back(allFrames[left--]); }
+                else          { selected.push_back(allFrames[right++]); }
+                --remaining;
+            }
+
+            // Build an in-memory RawContainer with post-process settings embedded
+            std::map<std::string, json11::Json> ppMap;
+            settings.toJson(ppMap);
+            json11::Json::object extra = {
+                { "referenceTimestamp", std::to_string((int64_t)timestamp) },
+                { "isHdr",             false },
+                { "postProcessSettings", json11::Json(ppMap) }
+            };
+            auto container = motioncam::RawContainer::Create(
+                cameraDesc_->metadata, 1, json11::Json(extra));
+            container->add(selected, false);
+
+            // Process to JPEG; BridgeProgressListener emits photoSaved / processingStopped
+            BridgeProgressListener listener(this, outputPath);
+            motioncam::MotionCam::ProcessImage(*container, outputPath.toStdString(), listener);
+
+        } catch (const std::exception& e) {
+            QString msg = QString::fromStdString(e.what());
+            QMetaObject::invokeMethod(this, [this, msg]() {
+                emit processingStopped();
+                emit cameraError("Burst save failed: " + msg);
+            }, Qt::QueuedConnection);
+        }
+        releaseBurstFrames();
+    });
+#endif
+}
+
+void CameraBridge::releaseBurstFrames() {
+#ifdef HAVE_IMAGE_PROCESSOR
+    std::lock_guard<std::mutex> lk(burstMutex_);
+    burstBuffers_.reset();
+#endif
+    if (burstProvider_) burstProvider_->clear();
 }
