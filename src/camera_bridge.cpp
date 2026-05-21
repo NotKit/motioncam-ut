@@ -834,7 +834,36 @@ void CameraBridge::acquireBurstFrames() {
             list[sharpestIdx] = m;
         }
 
-        QMetaObject::invokeMethod(this, [this, list]() {
+        // Estimate post-process settings from the sharpest frame.
+        // This gives the AUTO preset its temperature/tint/shadows/exposure values.
+        QString estimatedJson;
+        try {
+            const auto& sharpestFrame = *frames[sharpestIdx];
+            const auto& asShot = sharpestFrame.metadata.asShot;
+            fprintf(stderr, "CameraBridge: asShot = [%.4f, %.4f, %.4f]  "
+                    "colorMatrix1 empty=%d  calibrationMatrix1 empty=%d\n",
+                    asShot[0], asShot[1], asShot[2],
+                    cameraDesc_->metadata.colorMatrix1.empty() ? 1 : 0,
+                    cameraDesc_->metadata.calibrationMatrix1.empty() ? 1 : 0);
+
+            motioncam::PostProcessSettings est;
+            motioncam::ImageProcessor::estimateSettings(
+                sharpestFrame, cameraDesc_->metadata, est);
+
+            fprintf(stderr, "CameraBridge: estimated temperature=%.0f tint=%.2f "
+                    "shadows=%.3f exposure=%.3f\n",
+                    est.temperature, est.tint, est.shadows, est.exposure);
+
+            std::map<std::string, json11::Json> jsMap;
+            est.toJson(jsMap);
+            estimatedJson = QString::fromStdString(json11::Json(jsMap).dump());
+        } catch (...) {
+            fprintf(stderr, "CameraBridge: estimateSettings threw\n");
+        }
+
+        QMetaObject::invokeMethod(this, [this, list, estimatedJson]() {
+            if (!estimatedJson.isEmpty())
+                emit burstSettingsEstimated(estimatedJson);
             emit burstFramesReady(list);
         }, Qt::QueuedConnection);
     });

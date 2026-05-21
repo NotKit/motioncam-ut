@@ -112,6 +112,7 @@ signals:
     void processingStopped();
 
     void burstFramesReady(const QVariantList& frames);
+    void burstSettingsEstimated(const QString& settingsJson);
     void burstThumbnailReady(qint64 timestamp);
     void burstPreviewReady();
 
