@@ -79,8 +79,8 @@ public:
     Q_INVOKABLE void acquireBurstFrames();
     // Generate thumbnail for filmstrip (downscale=8). Emits burstThumbnailReady.
     Q_INVOKABLE void requestBurstThumbnail(qint64 timestamp);
-    // Generate large preview (downscale=4). Emits burstPreviewReady.
-    Q_INVOKABLE void requestBurstPreview(qint64 timestamp, const QString& settingsJson);
+    // Generate preview at given downscale (2=LARGE, 4=MEDIUM). Emits burstPreviewReady.
+    Q_INVOKABLE void requestBurstPreview(qint64 timestamp, const QString& settingsJson, int downscaleFactor = 4);
     // Process and save selected frame. Emits photoSaved on success.
     Q_INVOKABLE void saveBurstFrame(qint64 timestamp, int numFrames, const QString& settingsJson);
     // Release locked buffers when PostProcessView closes without saving.

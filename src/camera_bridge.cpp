@@ -900,10 +900,14 @@ void CameraBridge::requestBurstThumbnail(qint64 timestamp) {
 #endif
 }
 
-void CameraBridge::requestBurstPreview(qint64 timestamp, const QString& settingsJson) {
+void CameraBridge::requestBurstPreview(qint64 timestamp, const QString& settingsJson, int downscaleFactor) {
 #ifdef HAVE_IMAGE_PROCESSOR
     if (!cameraDesc_ || !burstProvider_) return;
-    QtConcurrent::run([this, timestamp, settingsJson]() {
+    // downscaleFactor must be 2, 4 or 8 — clamp to nearest valid value.
+    if (downscaleFactor <= 2)      downscaleFactor = 2;
+    else if (downscaleFactor <= 4) downscaleFactor = 4;
+    else                           downscaleFactor = 8;
+    QtConcurrent::run([this, timestamp, settingsJson, downscaleFactor]() {
         std::shared_ptr<motioncam::RawImageBuffer> frame;
         {
             std::lock_guard<std::mutex> lk(burstMutex_);
@@ -915,7 +919,7 @@ void CameraBridge::requestBurstPreview(qint64 timestamp, const QString& settings
         try {
             auto settings = settingsFromJson(settingsJson);
             auto buf = motioncam::ImageProcessor::createPreview(
-                *frame, 4, cameraDesc_->metadata, settings);
+                *frame, downscaleFactor, cameraDesc_->metadata, settings);
             QImage img = halideToQImage(buf);
             burstProvider_->setPreview(img);
             QMetaObject::invokeMethod(this, [this]() {

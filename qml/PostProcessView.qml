@@ -46,9 +46,16 @@ Item {
         return (delta > 0 ? "+" : "") + delta.toFixed(2) + " s"
     }
 
+    // High-quality scale=2 preview (after slider settles).
     function _requestPreview() {
         if (frames.length === 0) return
-        camera.requestBurstPreview(frames[selectedIndex].timestamp, root.settingsJson)
+        camera.requestBurstPreview(frames[selectedIndex].timestamp, root.settingsJson, 2)
+    }
+    // Fast scale=4 preview (while dragging a slider) — update settingsJson first.
+    function _requestFastPreview() {
+        if (frames.length === 0) return
+        root.settingsJson = JSON.stringify(root._s)
+        camera.requestBurstPreview(frames[selectedIndex].timestamp, root.settingsJson, 4)
     }
 
     function _formatValue(v, fmt) {
@@ -85,6 +92,7 @@ Item {
                 "temperature": 5000, "tint": 0, "sharpen0": 1.0, "sharpen1": 1.0, "pop": 1.0 }
         }
         root.settingsReset()
+        root.settingsJson = JSON.stringify(root._s)
         previewDebounce.restart()
     }
 
@@ -95,19 +103,74 @@ Item {
         id: previewArea
         anchors { top: parent.top; left: parent.left; right: parent.right }
         height: Math.min(parent.width * 3 / 4, parent.height * 0.50)
+        clip: true
 
-        Image {
-            id: previewImg
+        Flickable {
+            id: previewFlick
             anchors.fill: parent
-            fillMode: Image.PreserveAspectFit
-            source: previewToken > 0 ? "image://burst/preview?v=" + previewToken : ""
-            asynchronous: true
-            cache: false
+            // Pan only when zoomed in; single-touch drag conflicts with slider scroll otherwise.
+            interactive: zoomLevel > 1.01
+            contentWidth:  width  * zoomLevel
+            contentHeight: height * zoomLevel
+            property real zoomLevel: 1.0
+
+            Image {
+                id: previewImg
+                width:  previewFlick.contentWidth
+                height: previewFlick.contentHeight
+                fillMode: Image.PreserveAspectFit
+                source: previewToken > 0 ? "image://burst/preview?v=" + previewToken : ""
+                // BurstPreviewProvider returns an already-decoded QImage from memory.
+                // Synchronous load is instant and prevents the blank-frame flicker that
+                // occurs when asynchronous=true clears the display before the new image arrives.
+                asynchronous: false
+                cache: false
+            }
+
+            PinchArea {
+                width:  Math.max(previewFlick.width,  previewFlick.contentWidth)
+                height: Math.max(previewFlick.height, previewFlick.contentHeight)
+                property real startZoom: 1.0
+
+                onPinchStarted: startZoom = previewFlick.zoomLevel
+                onPinchUpdated: {
+                    var newZoom = Math.max(1.0, Math.min(4.0, startZoom * pinch.scale))
+                    previewFlick.zoomLevel = newZoom
+                    var dx = pinch.center.x - pinch.previousCenter.x
+                    var dy = pinch.center.y - pinch.previousCenter.y
+                    previewFlick.contentX = Math.max(0, Math.min(
+                        previewFlick.contentX - dx,
+                        previewFlick.contentWidth - previewFlick.width))
+                    previewFlick.contentY = Math.max(0, Math.min(
+                        previewFlick.contentY - dy,
+                        previewFlick.contentHeight - previewFlick.height))
+                }
+                onPinchFinished: {
+                    if (previewFlick.zoomLevel < 1.05) {
+                        previewFlick.zoomLevel = 1.0
+                        previewFlick.contentX  = 0
+                        previewFlick.contentY  = 0
+                    }
+                }
+
+                MouseArea {
+                    anchors.fill: parent
+                    onDoubleClicked: {
+                        if (previewFlick.zoomLevel > 1.05) {
+                            previewFlick.zoomLevel = 1.0
+                            previewFlick.contentX  = 0
+                            previewFlick.contentY  = 0
+                        } else {
+                            previewFlick.zoomLevel = 2.0
+                        }
+                    }
+                }
+            }
         }
 
         QQC2.BusyIndicator {
             anchors.centerIn: parent
-            running: previewImg.status === Image.Loading
+            running: previewToken === 0
         }
 
         // Back / cancel button (top-left)
@@ -115,6 +178,7 @@ Item {
             anchors { top: parent.top; left: parent.left; margins: units.gu(1) }
             width: units.gu(4.5); height: width; radius: width / 2
             color: "#88000000"
+            z: 1
             Label {
                 anchors.centerIn: parent
                 text: "‹"
@@ -215,7 +279,7 @@ Item {
 
             MouseArea {
                 anchors.fill: parent
-                onClicked: { root.selectedIndex = index; root._requestPreview() }
+                onClicked: { root.selectedIndex = index; root._requestFastPreview(); previewDebounce.restart() }
             }
 
             Component.onCompleted: camera.requestBurstThumbnail(frame.timestamp)
@@ -269,7 +333,7 @@ Item {
                         QQC2.Slider {
                             id: sl; width: parent.width - units.gu(2)
                             from: cfg.from; to: cfg.to; value: parent.displayValue
-                            onMoved: { root._s[cfg.key] = value; previewDebounce.restart() }
+                            onMoved: { root._s[cfg.key] = value; root._requestFastPreview(); previewDebounce.restart() }
                         }
                     }
                 }
@@ -297,7 +361,7 @@ Item {
                             id: sl2; width: parent.width - units.gu(2)
                             from: cfg.from; to: cfg.to
                             value: cfg.key in root._s ? root._s[cfg.key] : cfg.def
-                            onMoved: { root._s[cfg.key] = value; previewDebounce.restart() }
+                            onMoved: { root._s[cfg.key] = value; root._requestFastPreview(); previewDebounce.restart() }
                         }
                     }
                 }
@@ -352,7 +416,7 @@ Item {
                             id: sl3; width: parent.width - units.gu(2)
                             from: cfg.from; to: cfg.to
                             value: cfg.key in root._s ? root._s[cfg.key] : cfg.def
-                            onMoved: { root._s[cfg.key] = value; previewDebounce.restart() }
+                            onMoved: { root._s[cfg.key] = value; root._requestFastPreview(); previewDebounce.restart() }
                         }
                     }
                 }
@@ -382,7 +446,7 @@ Item {
                             id: sl4; width: parent.width - units.gu(2)
                             from: cfg.from; to: cfg.to
                             value: cfg.key in root._s ? root._s[cfg.key] : cfg.def
-                            onMoved: { root._s[cfg.key] = value; previewDebounce.restart() }
+                            onMoved: { root._s[cfg.key] = value; root._requestFastPreview(); previewDebounce.restart() }
                         }
                     }
                 }
@@ -457,6 +521,7 @@ Item {
             if (parsed["shadows"]     !== undefined) root._s["shadows"]     = parsed["shadows"]
             if (parsed["exposure"]    !== undefined) root._s["exposure"]    = parsed["exposure"]
             root.settingsReset()
+            root.settingsJson = JSON.stringify(root._s)
             previewDebounce.restart()
         }
     }
@@ -465,7 +530,7 @@ Item {
         id: previewDebounce
         interval: 300
         onTriggered: {
-            root.settingsJson = JSON.stringify(root._s)
+            // settingsJson was already updated by _requestFastPreview; just request LARGE pass.
             root._requestPreview()
         }
     }
@@ -481,6 +546,9 @@ Item {
         for (var i = 0; i < frameList.length; ++i) {
             if (frameList[i].sharpest) { root.selectedIndex = i; break }
         }
-        root._requestPreview()
+        // Fast scale=4 preview immediately; debounce (started by burstSettingsEstimated)
+        // will fire 300 ms later and upgrade to scale=2.
+        root._requestFastPreview()
+        if (!previewDebounce.running) previewDebounce.restart()
     }
 }
