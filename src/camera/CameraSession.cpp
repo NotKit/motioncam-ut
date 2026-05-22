@@ -778,6 +778,7 @@ namespace motioncam {
         }
 
         mCameraStateManager->requestExposureMode(CameraMode::AUTO);
+        mCameraStateManager->activate();
     }
 
     void CameraSession::doSetManualExposure(int32_t iso, int64_t exposureTime) {
@@ -788,6 +789,7 @@ namespace motioncam {
 
         if (mState == CameraCaptureSessionState::ACTIVE) {
             mCameraStateManager->requestUserExposure(iso, exposureTime);
+            mCameraStateManager->activate();
         }
     }
 
@@ -804,6 +806,7 @@ namespace motioncam {
         }
 
         mCameraStateManager->requestUserFocus(focusX, focusY);
+        mCameraStateManager->activate();
     }
 
     void CameraSession::doSetAutoFocus() {
@@ -813,6 +816,7 @@ namespace motioncam {
         }
 
         mCameraStateManager->requestAutoFocus();
+        mCameraStateManager->activate();
     }
 
     void CameraSession::doPrecaptureCaptureHdr(int iso, int64_t exposure) {
@@ -994,38 +998,47 @@ namespace motioncam {
         int exposureComp = static_cast<int>(std::round(value*range + mCameraDescription->exposureCompensationRange[0]));
 
         mCameraStateManager->requestExposureCompensation(exposureComp);
+        mCameraStateManager->activate();
     }
 
     void CameraSession::doSetFrameRate(int frameRate) {
         mCameraStateManager->requestFrameRate(frameRate);
+        mCameraStateManager->activate();
     }
 
     void CameraSession::doSetAWBLock(bool lock) {
         mCameraStateManager->requestAwbLock(lock);
+        mCameraStateManager->activate();
     }
 
     void CameraSession::doSetAELock(bool lock) {
         mCameraStateManager->requestAELock(lock);
+        mCameraStateManager->activate();
     }
 
     void CameraSession::doSetOIS(bool on) {
         mCameraStateManager->requestOis(on);
+        mCameraStateManager->activate();
     }
 
     void CameraSession::doSetFocusDistance(float focusDistance) {
         mCameraStateManager->requestManualFocus(focusDistance);
+        mCameraStateManager->activate();
     }
 
     void CameraSession::doSetFocusForVideo(bool focusForVideo) {
         mCameraStateManager->requestFocusForVideo(focusForVideo);
+        mCameraStateManager->activate();
     }
 
     void CameraSession::doSetLensAperture(float lensAperture) {
         mCameraStateManager->requestAperture(lensAperture);
+        mCameraStateManager->activate();
     }
 
     void CameraSession::doEnableTorch(bool enable) {
         mCameraStateManager->requestTorch(enable);
+        mCameraStateManager->activate();
     }
 
     void CameraSession::doActivateCameraSettings() {

@@ -256,10 +256,11 @@ Item {
                         MouseArea {
                             anchors.fill: parent
                             onClicked: {
-                                lockPanel[cfg.prop] = !active
-                                if (cfg.prop === "aeLocked")  camera.setAELock(!active)
-                                if (cfg.prop === "afLocked")  camera.setFocusLock(!active)
-                                if (cfg.prop === "awbLocked") camera.setAWBLock(!active)
+                                var newVal = !active
+                                lockPanel[cfg.prop] = newVal
+                                if (cfg.prop === "aeLocked")  camera.setAELock(newVal)
+                                if (cfg.prop === "afLocked")  camera.setFocusLock(newVal)
+                                if (cfg.prop === "awbLocked") camera.setAWBLock(newVal)
                             }
                         }
                     }
