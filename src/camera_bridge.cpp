@@ -597,10 +597,13 @@ void CameraBridge::capturePhoto(const QString& outputPath, const QString& settin
 
     // Default settings + JSON overrides. PostProcessSettings(json) maps any
     // recognised fields (contrast, saturation, dng, spatialDenoiseLevel, ...)
-    // and leaves the rest at defaults. "saveJpeg" is bridge-only (not part of
-    // PostProcessSettings) so we parse it out separately.
+    // and leaves the rest at defaults. "saveJpeg", "temperatureOffset" and
+    // "tintOffset" are bridge-only (not part of PostProcessSettings) so we
+    // parse them out separately.
     motioncam::PostProcessSettings settings;
     bool saveJpeg = true;
+    float temperatureOffset = 0.0f;
+    float tintOffset        = 0.0f;
     if (!settingsJson.isEmpty()) {
         std::string err;
         auto j = json11::Json::parse(settingsJson.toStdString(), err);
@@ -608,6 +611,29 @@ void CameraBridge::capturePhoto(const QString& outputPath, const QString& settin
             settings = motioncam::PostProcessSettings(j);
             if (j["saveJpeg"].is_bool())
                 saveJpeg = j["saveJpeg"].bool_value();
+            if (j["temperatureOffset"].is_number())
+                temperatureOffset = j["temperatureOffset"].number_value();
+            if (j["tintOffset"].is_number())
+                tintOffset = j["tintOffset"].number_value();
+        }
+    }
+
+    // Mirrors Android's EstimatePostProcessSettings JNI + (estimate + offset)
+    // applied in CameraActivity.capture(). When either WB slider is nudged,
+    // pull the latest ZSL buffer, run estimateSettings to get the auto-WB
+    // baseline, add the slider offset, and pass as absolute temperature/tint.
+    // consumeLatestBuffer's LockedBuffers destructor returns the buffer to
+    // the ZSL pool, so the upcoming captureHdr still has it available.
+    if (temperatureOffset != 0.0f || tintOffset != 0.0f) {
+        auto lockedBuffer = motioncam::RawBufferManager::get().consumeLatestBuffer();
+        if (lockedBuffer && !lockedBuffer->getBuffers().empty() && cameraDesc_) {
+            motioncam::PostProcessSettings est;
+            motioncam::ImageProcessor::estimateSettings(
+                *lockedBuffer->getBuffers().front(),
+                cameraDesc_->metadata,
+                est);
+            settings.temperature = est.temperature + temperatureOffset;
+            settings.tint        = est.tint        + tintOffset;
         }
     }
 

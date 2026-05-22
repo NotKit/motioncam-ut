@@ -246,6 +246,9 @@ Item {
                     onReleased: {
                         shutterInner.scale = 1.0
                         if (!camera.ready) return
+                        // Close the settings panel — current values are read into
+                        // the capture call below, then the user sees the preview.
+                        settingsPanel.open = false
                         if (currentMode === "VIDEO") {
                             if (camera.recording) camera.stopRecording()
                             else                   camera.startRecording()
@@ -610,16 +613,20 @@ Item {
     }
 
     // Serialise the quick-settings panel into a settings JSON for capturePhoto().
-    // Tint/warmth offsets are intentionally not sent: their semantic is
-    // "offset-from-estimate", which libMotionCam doesn't support yet — sending
-    // raw values would override estimateSettings entirely. TODO when supported.
+    // Mirrors the Android CameraActivity.capture() flow: contrast, saturation,
+    // dng and spatialDenoiseLevel are direct PostProcessSettings overrides;
+    // temperatureOffset and tintOffset are bridge-only fields — the C++ side
+    // runs estimateSettings() on the latest ZSL buffer and adds the offset
+    // to get the absolute temperature/tint to pass to libMotionCam.
     function _buildPhotoSettings() {
         var s = {
             contrast:            settingsPanel.contrast,
             saturation:          settingsPanel.saturation,
             spatialDenoiseLevel: settingsPanel.denoiseEnabled ? -1 : 0,
             dng:                 settingsPanel.saveDng,
-            saveJpeg:            settingsPanel.saveJpeg
+            saveJpeg:            settingsPanel.saveJpeg,
+            temperatureOffset:   settingsPanel.warmthOffset,
+            tintOffset:          settingsPanel.tintOffset
         }
         return JSON.stringify(s)
     }
