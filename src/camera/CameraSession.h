@@ -69,6 +69,7 @@ namespace motioncam {
         void setAELock(bool lock);
         void setOIS(bool on);
         void setFocusDistance(float focusDistance);
+        float currentFocusDistance() const { return mLastFocusDistance; }
         void setFocusForVideo(bool focusForVideo);
         void setLensAperture(float lensAperture);
         void setTorch(bool enable);

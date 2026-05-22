@@ -144,6 +144,130 @@ Item {
         }
     }
 
+    // Quick-settings strip (EV compensation + locks)
+    // Two pill-shaped panels above the mode strip, matching the Android layout.
+    Row {
+        id: quickStrip
+        anchors {
+            bottom: modeStrip.top; bottomMargin: units.gu(1.5)
+            horizontalCenter: parent.horizontalCenter
+        }
+        spacing: units.gu(1.5)
+        visible: !camera.recording && !settingsPanel.open
+
+        // Left panel: EV compensation ─────────────────────────────────────────
+        // evIndex is stored as integer steps of 1/3 EV across a ±2 EV range
+        // (12 steps total). The bridge call expects 0.0–1.0, where 0.5 = neutral.
+        Rectangle {
+            id: evPanel
+            property int evIndex: 0          // -6 .. +6 in 1/3 EV steps
+            property real evValue: evIndex / 3.0
+            width: units.gu(22); height: units.gu(7)
+            radius: units.gu(1)
+            color: "#A0202832"
+
+            function evInc() {
+                if (evIndex < 6) { evIndex++; camera.setExposureCompensation((evIndex + 6) / 12.0) }
+            }
+            function evDec() {
+                if (evIndex > -6) { evIndex--; camera.setExposureCompensation((evIndex + 6) / 12.0) }
+            }
+
+            // +/- buttons at corners (top row)
+            Label {
+                anchors { top: parent.top; left: parent.left; margins: units.gu(0.8) }
+                text: "+"; color: "white"; font.pixelSize: units.gu(2); font.bold: true
+                MouseArea { anchors.fill: parent; anchors.margins: -units.gu(0.6); onClicked: evPanel.evInc() }
+            }
+            Label {
+                anchors { top: parent.top; right: parent.right; margins: units.gu(0.8) }
+                text: "−"; color: "white"; font.pixelSize: units.gu(2); font.bold: true
+                MouseArea { anchors.fill: parent; anchors.margins: -units.gu(0.6); onClicked: evPanel.evDec() }
+            }
+
+            // Centred EV readout
+            Label {
+                anchors.centerIn: parent
+                text: (evPanel.evValue >= 0 ? "+" : "") + evPanel.evValue.toFixed(2) + " EV"
+                color: "white"
+                font.pixelSize: units.gu(1.8)
+                font.bold: true
+            }
+
+            // Sun/moon glyphs (bottom row)
+            Label {
+                anchors { bottom: parent.bottom; left: parent.left; margins: units.gu(0.8) }
+                text: "☀"; color: "#cccccc"; font.pixelSize: units.gu(1.6)
+            }
+            Label {
+                anchors { bottom: parent.bottom; right: parent.right; margins: units.gu(0.8) }
+                text: "☾"; color: "#cccccc"; font.pixelSize: units.gu(1.6)
+            }
+        }
+
+        // Right panel: AE / AF / AWB lock chips ───────────────────────────────
+        Rectangle {
+            id: lockPanel
+            property bool aeLocked:  false
+            property bool afLocked:  false
+            property bool awbLocked: false
+            width: units.gu(24); height: units.gu(7)
+            radius: units.gu(1)
+            color: "#A0202832"
+
+            Row {
+                anchors.centerIn: parent
+                spacing: units.gu(1)
+
+                Repeater {
+                    model: [
+                        { label: "AE",  prop: "aeLocked"  },
+                        { label: "AF",  prop: "afLocked"  },
+                        { label: "AWB", prop: "awbLocked" },
+                    ]
+                    // Lock chip — matches Android's open/closed-padlock + text-colour cue.
+                    // Locked: 🔒 + gold text. Unlocked: 🔓 + white text. Background
+                    // stays neutral; the lock metaphor is carried by the padlock glyph,
+                    // not the chip colour (which previously read as "feature enabled").
+                    Rectangle {
+                        property var cfg: modelData
+                        property bool active: lockPanel[cfg.prop]
+                        width: units.gu(7); height: units.gu(4.5)
+                        radius: units.gu(0.6)
+                        color: "#30ffffff"
+                        border.color: "#80ffffff"; border.width: 1
+                        Row {
+                            anchors.centerIn: parent
+                            spacing: units.gu(0.4)
+                            Label {
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: active ? "🔒" : "🔓"
+                                color: active ? "#FFD700" : "#cccccc"
+                                font.pixelSize: units.gu(1.4)
+                            }
+                            Label {
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: cfg.label
+                                color: active ? "#FFD700" : "white"
+                                font.pixelSize: units.gu(1.5)
+                                font.bold: true
+                            }
+                        }
+                        MouseArea {
+                            anchors.fill: parent
+                            onClicked: {
+                                lockPanel[cfg.prop] = !active
+                                if (cfg.prop === "aeLocked")  camera.setAELock(!active)
+                                if (cfg.prop === "afLocked")  camera.setFocusLock(!active)
+                                if (cfg.prop === "awbLocked") camera.setAWBLock(!active)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // Mode strip
     Row {
         id: modeStrip

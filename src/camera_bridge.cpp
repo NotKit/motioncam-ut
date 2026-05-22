@@ -705,6 +705,25 @@ void CameraBridge::setExposureCompensation(float ev) {
     if (cameraSession_) cameraSession_->setExposureCompensation(ev);
 }
 
+void CameraBridge::setAELock(bool lock) {
+    if (cameraSession_) cameraSession_->setAELock(lock);
+}
+
+void CameraBridge::setAWBLock(bool lock) {
+    if (cameraSession_) cameraSession_->setAWBLock(lock);
+}
+
+void CameraBridge::setFocusLock(bool lock) {
+    if (!cameraSession_) return;
+    if (lock) {
+        // Switch to manual focus at the current AF-resolved distance.
+        cameraSession_->setFocusDistance(cameraSession_->currentFocusDistance());
+    } else {
+        // Return to continuous auto-focus.
+        cameraSession_->setAutoFocus();
+    }
+}
+
 void CameraBridge::setTorch(bool on) {
     if (cameraSession_) cameraSession_->setTorch(on);
 }

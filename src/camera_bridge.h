@@ -97,7 +97,12 @@ public:
     Q_INVOKABLE void setDeviceRotation(int degrees);
     Q_INVOKABLE void setAutoExposure();
     Q_INVOKABLE void setManualExposure(int iso, int exposureMs);
+    // 0.0 = most underexposed, 0.5 = neutral, 1.0 = most overexposed (device-relative).
     Q_INVOKABLE void setExposureCompensation(float ev);
+    Q_INVOKABLE void setAELock(bool lock);
+    Q_INVOKABLE void setAWBLock(bool lock);
+    // Locks AF in place at the current focus distance; unlock returns to auto.
+    Q_INVOKABLE void setFocusLock(bool lock);
     Q_INVOKABLE void setTorch(bool on);
     Q_INVOKABLE void setFocusPoint(float x, float y);
     Q_INVOKABLE void setAutoFocus();
