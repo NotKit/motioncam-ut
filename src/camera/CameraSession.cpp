@@ -820,9 +820,14 @@ namespace motioncam {
         if(iso < 0 || exposure < 0)
             return;
 
-        uint8_t mode  = ACAMERA_CONTROL_MODE_OFF_KEEP_STATE;
+        // libhybris HAL ignores per-frame sensor overrides unless AE is explicitly
+        // disabled (CONTROL_MODE_OFF_KEEP_STATE alone is not enough). AE_MODE_OFF
+        // forces the HAL to use the manually-set SENSITIVITY and EXPOSURE_TIME.
+        uint8_t mode   = ACAMERA_CONTROL_MODE_OFF_KEEP_STATE;
+        uint8_t aeMode = ACAMERA_CONTROL_AE_MODE_OFF;
 
         ACaptureRequest_setEntry_u8(mSessionContext->hdrCaptureRequests[0]->captureRequest, ACAMERA_CONTROL_MODE, 1, &mode);
+        ACaptureRequest_setEntry_u8(mSessionContext->hdrCaptureRequests[0]->captureRequest, ACAMERA_CONTROL_AE_MODE, 1, &aeMode);
         ACaptureRequest_setEntry_i32(mSessionContext->hdrCaptureRequests[0]->captureRequest, ACAMERA_SENSOR_SENSITIVITY, 1, &iso);
         ACaptureRequest_setEntry_i64(mSessionContext->hdrCaptureRequests[0]->captureRequest, ACAMERA_SENSOR_EXPOSURE_TIME, 1, &exposure);
 
@@ -830,6 +835,7 @@ namespace motioncam {
         int64_t lastExposureTime = mLastExposureTime;
 
         ACaptureRequest_setEntry_u8(mSessionContext->hdrCaptureRequests[1]->captureRequest, ACAMERA_CONTROL_MODE, 1, &mode);
+        ACaptureRequest_setEntry_u8(mSessionContext->hdrCaptureRequests[1]->captureRequest, ACAMERA_CONTROL_AE_MODE, 1, &aeMode);
         ACaptureRequest_setEntry_i32(mSessionContext->hdrCaptureRequests[1]->captureRequest, ACAMERA_SENSOR_SENSITIVITY, 1, &lastIso);
         ACaptureRequest_setEntry_i64(mSessionContext->hdrCaptureRequests[1]->captureRequest, ACAMERA_SENSOR_EXPOSURE_TIME, 1, &lastExposureTime);
 
@@ -861,16 +867,21 @@ namespace motioncam {
             return;
         }
 
-        uint8_t mode  = ACAMERA_CONTROL_MODE_OFF_KEEP_STATE;
+        // See doPrecaptureCaptureHdr() — AE_MODE_OFF is required for the libhybris
+        // HAL to honor the per-frame SENSITIVITY/EXPOSURE_TIME overrides.
+        uint8_t mode   = ACAMERA_CONTROL_MODE_OFF_KEEP_STATE;
+        uint8_t aeMode = ACAMERA_CONTROL_AE_MODE_OFF;
 
         float focusDistance = mLastFocusDistance;
 
         ACaptureRequest_setEntry_u8(mSessionContext->hdrCaptureRequests[0]->captureRequest, ACAMERA_CONTROL_MODE, 1, &mode);
+        ACaptureRequest_setEntry_u8(mSessionContext->hdrCaptureRequests[0]->captureRequest, ACAMERA_CONTROL_AE_MODE, 1, &aeMode);
         ACaptureRequest_setEntry_float(mSessionContext->hdrCaptureRequests[0]->captureRequest, ACAMERA_LENS_FOCUS_DISTANCE, 1, &focusDistance);
         ACaptureRequest_setEntry_i32(mSessionContext->hdrCaptureRequests[0]->captureRequest, ACAMERA_SENSOR_SENSITIVITY, 1, &baseIso);
         ACaptureRequest_setEntry_i64(mSessionContext->hdrCaptureRequests[0]->captureRequest, ACAMERA_SENSOR_EXPOSURE_TIME, 1, &baseExposure);
 
         ACaptureRequest_setEntry_u8(mSessionContext->hdrCaptureRequests[1]->captureRequest, ACAMERA_CONTROL_MODE, 1, &mode);
+        ACaptureRequest_setEntry_u8(mSessionContext->hdrCaptureRequests[1]->captureRequest, ACAMERA_CONTROL_AE_MODE, 1, &aeMode);
         ACaptureRequest_setEntry_float(mSessionContext->hdrCaptureRequests[1]->captureRequest, ACAMERA_LENS_FOCUS_DISTANCE, 1, &focusDistance);
         ACaptureRequest_setEntry_i32(mSessionContext->hdrCaptureRequests[1]->captureRequest, ACAMERA_SENSOR_SENSITIVITY, 1, &hdrIso);
         ACaptureRequest_setEntry_i64(mSessionContext->hdrCaptureRequests[1]->captureRequest, ACAMERA_SENSOR_EXPOSURE_TIME, 1, &hdrExposure);

@@ -30,6 +30,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <cerrno>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 
@@ -573,6 +574,19 @@ void CameraBridge::stopRecording() {
     });
 }
 
+// Mirrors DenoiseSettings.java estimateFromExposure(): EV → base merge count.
+// Lower EV (darker scene) gets more frames to merge.
+static int estimateMergeFrames(int iso, int64_t exposureNs, float aperture) {
+    if (iso <= 0 || exposureNs <= 0) return 4;
+    double a = aperture > 0 ? aperture : 1.8;
+    double expSec = exposureNs / 1.0e9;
+    double ev = std::log2((a * a) / expSec) - std::log2(iso / 100.0);
+    if      (ev > 7.99) return 4;
+    else if (ev > 5.99) return 6;
+    else if (ev > 3.99) return 8;
+    else                return 12;
+}
+
 void CameraBridge::capturePhoto(const QString& outputPath) {
     if (!isReady() || isRecording() || !cameraSession_) return;
     if (!isRawCapable()) {
@@ -585,8 +599,23 @@ void CameraBridge::capturePhoto(const QString& outputPath) {
         captureOutputPath_ = path;
         captureSkipProcessing_ = false;
     }
+    float aperture = 0.0f;
+    if (cameraDesc_ && !cameraDesc_->metadata.apertures.empty())
+        aperture = cameraDesc_->metadata.apertures[0];
+    int numMerge = estimateMergeFrames(lastIso_.load(), lastExposureNs_.load(), aperture);
     motioncam::PostProcessSettings settings;
-    cameraSession_->captureHdr(1, settings, path.toStdString());
+    cameraSession_->captureHdr(numMerge, settings, path.toStdString());
+}
+
+void CameraBridge::prepareHdrCapture() {
+    if (!isReady() || isRecording() || !cameraSession_) return;
+    int32_t iso = lastIso_.load();
+    int64_t exp = lastExposureNs_.load();
+    // Need a valid AE reading; if none, skip — capturePhoto will save without
+    // the HDR underexposed frame (mRequestedHdrCaptures stays 0).
+    if (iso <= 0 || exp <= 0) return;
+    // HDR underexposed: same ISO, 1/4 the exposure time (≈ -2 EV).
+    cameraSession_->prepareHdr(iso, exp / 4);
 }
 
 
@@ -678,7 +707,11 @@ void CameraBridge::onCameraAutoFocusStateChanged(
 void CameraBridge::onCameraAutoExposureStateChanged(
         const motioncam::CameraExposureState /*state*/) {}
 
-void CameraBridge::onCameraHdrImageCaptureProgress(int /*progress*/) {}
+void CameraBridge::onCameraHdrImageCaptureProgress(int progress) {
+    QMetaObject::invokeMethod(this, [this, progress]() {
+        emit processingProgress(progress);
+    }, Qt::QueuedConnection);
+}
 
 void CameraBridge::onCameraHdrImageCaptureCompleted() {
     QString motioncamPath;

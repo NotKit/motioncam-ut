@@ -236,7 +236,13 @@ Item {
 
                 MouseArea {
                     anchors.fill: parent
-                    onPressed:  shutterInner.scale = 0.88
+                    onPressed: {
+                        shutterInner.scale = 0.88
+                        // Queue the HDR underexposed frame while the user is still
+                        // pressing — capturePhoto on release will then save with it.
+                        if (camera.ready && currentMode === "PHOTO")
+                            camera.prepareHdrCapture()
+                    }
                     onReleased: {
                         shutterInner.scale = 1.0
                         if (!camera.ready) return

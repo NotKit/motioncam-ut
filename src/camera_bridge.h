@@ -73,6 +73,9 @@ public:
     Q_INVOKABLE void stopRecording();
     Q_INVOKABLE void capturePhoto(const QString& outputPath = QString());
     Q_INVOKABLE void captureRaw(const QString& outputPath = QString());
+    // Queue an HDR underexposed precapture using current ISO and exposureTime/4.
+    // Call on shutter-press DOWN so the frame is ready by the time capturePhoto fires.
+    Q_INVOKABLE void prepareHdrCapture();
 
     // ── Burst post-process API ────────────────────────────────────────────────
     // Call on shutter press in BURST mode: locks rolling buffer, emits burstFramesReady.
