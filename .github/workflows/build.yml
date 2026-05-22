@@ -1,0 +1,60 @@
+name: Build click package (arm64)
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Cache the downloaded Halide 14 prebuilt (~150 MB).
+      # Key is static — the version is pinned in generate_halide_kernels.sh.
+      - name: Cache Halide toolchain download
+        uses: actions/cache@v4
+        with:
+          path: scripts/.halide-tools
+          key: halide-tools-14.0.0
+
+      # Cache the generated arm64 static libraries and runtime headers.
+      # Invalidated only when the generator sources or the generation script change.
+      - name: Cache Halide arm64 kernels
+        uses: actions/cache@v4
+        id: halide-kernels
+        with:
+          path: |
+            libMotionCam/libMotionCam/halide/arm64-linux
+            libMotionCam/libMotionCam/halide/include
+          key: halide-kernels-${{ hashFiles('scripts/generate_halide_kernels.sh', 'libMotionCam/libMotionCam/generators/**') }}
+
+      - name: Generate Halide arm64 kernels
+        if: steps.halide-kernels.outputs.cache-hit != 'true'
+        run: bash scripts/generate_halide_kernels.sh
+
+      - name: Install Clickable
+        run: pip3 install 'clickable-ut>=8.8.0'
+
+      - name: Build click package
+        run: clickable build --arch arm64 --non-interactive
+
+      - name: Upload click package
+        uses: actions/upload-artifact@v4
+        with:
+          name: motioncam-arm64
+          path: build/*/app/*.click
+          if-no-files-found: error
+
+      # Publish a GitHub release when a v* tag is pushed.
+      - name: Create GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/*/app/*.click
