@@ -252,7 +252,7 @@ Item {
                         } else if (currentMode === "BURST") {
                             camera.acquireBurstFrames()
                         } else {
-                            camera.capturePhoto()
+                            camera.capturePhoto("", root._buildPhotoSettings())
                         }
                     }
                 }
@@ -375,11 +375,199 @@ Item {
         style: Text.Outline; styleColor: "#80000000"
     }
 
+    // Quick-settings slide-down panel
+    // Holds JPEG/DNG/NR toggles + Camera Profile sliders. Settings live as
+    // properties on settingsPanel for now; wiring into capturePhoto()/saveBurstFrame()
+    // is a follow-up.
+    Item {
+        id: settingsPanel
+        property bool open: false
+        property bool saveJpeg: true
+        property bool saveDng: false
+        property bool denoiseEnabled: true
+        property bool saveBurstAsVideo: false
+        // Stored as raw PostProcessSettings values (defaults match the C++ ctor).
+        property real contrast:    0.5
+        property real saturation:  1.05
+        property real tintOffset:  0     // added to estimated tint at save time
+        property real warmthOffset: 0    // K, added to estimated temperature
+
+        // Sized to fit content (chevron room + Column + bottom padding); slid
+        // off-screen by binding y. anchors.top must NOT be set or it overrides
+        // the y binding and the panel stays "open". Height is capped to the
+        // area above the mode strip so the panel can't push past it.
+        width: parent.width
+        height: Math.min(panelColumn.height + units.gu(8), modeStrip.y - units.gu(1))
+        y: open ? 0 : -height
+        z: 15
+        clip: true
+        Behavior on y { NumberAnimation { duration: 250; easing.type: Easing.OutCubic } }
+
+        // Tap-blocker so background touches don't pass through to focus etc.
+        MouseArea { anchors.fill: parent }
+
+        Rectangle { anchors.fill: parent; color: "#E0101418" }
+
+        Item {
+            anchors {
+                top: parent.top; topMargin: units.gu(6)   // leave room for the chevron
+                left: parent.left; right: parent.right
+                bottom: parent.bottom
+                margins: units.gu(2)
+            }
+
+            Column {
+                id: panelColumn
+                width: parent.width
+                spacing: units.gu(1)
+
+                // ── Save options card ────────────────────────────────────
+                Rectangle {
+                    width: parent.width
+                    color: "#1c2330"
+                    radius: units.gu(1)
+                    height: saveOpts.height + units.gu(2)
+
+                    Column {
+                        id: saveOpts
+                        anchors {
+                            left: parent.left; right: parent.right
+                            verticalCenter: parent.verticalCenter
+                            leftMargin: units.gu(1.5); rightMargin: units.gu(1.5)
+                        }
+                        spacing: units.gu(1)
+
+                        Repeater {
+                            model: [
+                                { title: "JPEG",            desc: "Save JPEG",                         key: "saveJpeg"          },
+                                { title: "DNG",             desc: "Save DNG",                          key: "saveDng"           },
+                                { title: "Noise reduction", desc: "Apply noise reduction to DNG",      key: "denoiseEnabled"    },
+                                { title: "Save burst as video",
+                                  desc: "Save burst capture photos as a short MCRAW container video", key: "saveBurstAsVideo"  },
+                            ]
+                            Row {
+                                width: saveOpts.width
+                                spacing: units.gu(1)
+                                Column {
+                                    width: parent.width - sw.width - units.gu(1)
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    Label {
+                                        text: modelData.title
+                                        color: "white"
+                                        font.pixelSize: units.gu(1.7)
+                                        font.bold: true
+                                    }
+                                    Label {
+                                        text: modelData.desc
+                                        color: "#9aa4b2"
+                                        font.pixelSize: units.gu(1.2)
+                                        wrapMode: Text.WordWrap
+                                        width: parent.width
+                                    }
+                                }
+                                QQC2.Switch {
+                                    id: sw
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    checked: settingsPanel[modelData.key]
+                                    onToggled: settingsPanel[modelData.key] = checked
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ── Camera Profile section ───────────────────────────────
+                Item {
+                    width: settingsPanel.width - units.gu(4)
+                    height: units.gu(4)
+                    Label {
+                        anchors {
+                            left: parent.left; leftMargin: units.gu(0.5)
+                            verticalCenter: parent.verticalCenter
+                        }
+                        text: "Camera Profile"
+                        color: "white"
+                        font.pixelSize: units.gu(2)
+                        font.bold: true
+                    }
+                }
+
+                Repeater {
+                    model: [
+                        { key: "contrast",      label: "Contrast",   from: 0,     to: 1,    def: 0.5,  scale: 100 },
+                        { key: "saturation",    label: "Saturation", from: 0,     to: 2,    def: 1.05, scale: 50  },
+                        { key: "tintOffset",    label: "Tint",       from: -50,   to: 50,   def: 0,    scale: 1   },
+                        { key: "warmthOffset",  label: "Warmth",     from: -1500, to: 1500, def: 0,    scale: 1   },
+                    ]
+                    Column {
+                        width: settingsPanel.width - units.gu(4)
+                        spacing: units.gu(0.2)
+                        property var cfg: modelData
+                        Row {
+                            width: parent.width
+                            Label {
+                                text: cfg.label
+                                color: "white"
+                                font.pixelSize: units.gu(1.6)
+                                width: parent.width * 0.6
+                            }
+                            Label {
+                                text: cfg.key === "warmthOffset"
+                                    ? (sl.value >= 0 ? "+" : "") + Math.round(sl.value) + "K"
+                                    : cfg.key === "tintOffset"
+                                        ? (sl.value >= 0 ? "+" : "") + Math.round(sl.value)
+                                        : Math.round(sl.value * cfg.scale) + "%"
+                                color: "#9aa4b2"
+                                font.pixelSize: units.gu(1.4)
+                                width: parent.width * 0.4
+                                horizontalAlignment: Text.AlignRight
+                            }
+                        }
+                        QQC2.Slider {
+                            id: sl
+                            width: parent.width
+                            from: cfg.from; to: cfg.to
+                            value: settingsPanel[cfg.key]
+                            onMoved: settingsPanel[cfg.key] = value
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Chevron toggle (top center) ───────────────────────────────────────────
+    Rectangle {
+        id: chevronBtn
+        anchors { top: parent.top; topMargin: units.gu(2.5); horizontalCenter: parent.horizontalCenter }
+        width: units.gu(4); height: units.gu(2.4); radius: units.gu(1.2)
+        color: "#80000000"
+        border.color: "#80ffffff"; border.width: 1
+        z: 20
+
+        Label {
+            anchors.centerIn: parent
+            text: "⌄"
+            color: "white"
+            font.pixelSize: units.gu(2)
+            font.bold: true
+            rotation: settingsPanel.open ? 180 : 0
+            Behavior on rotation { NumberAnimation { duration: 200 } }
+        }
+
+        MouseArea {
+            anchors.fill: parent
+            onClicked: settingsPanel.open = !settingsPanel.open
+        }
+    }
+
     // Touch-to-focus
     MouseArea {
         anchors.fill: parent
         z: -1
         onClicked: function(mouse) {
+            // Settings panel covers preview — don't focus through it.
+            if (settingsPanel.open) return
             camera.setFocusPoint(mouse.x / width, mouse.y / height)
             focusRing.x = mouse.x - focusRing.width / 2
             focusRing.y = mouse.y - focusRing.height / 2
@@ -419,5 +607,20 @@ Item {
             postProcessView.onFramesReady(frameList)
             postProcessView.visible = true
         }
+    }
+
+    // Serialise the quick-settings panel into a settings JSON for capturePhoto().
+    // Tint/warmth offsets are intentionally not sent: their semantic is
+    // "offset-from-estimate", which libMotionCam doesn't support yet — sending
+    // raw values would override estimateSettings entirely. TODO when supported.
+    function _buildPhotoSettings() {
+        var s = {
+            contrast:            settingsPanel.contrast,
+            saturation:          settingsPanel.saturation,
+            spatialDenoiseLevel: settingsPanel.denoiseEnabled ? -1 : 0,
+            dng:                 settingsPanel.saveDng,
+            saveJpeg:            settingsPanel.saveJpeg
+        }
+        return JSON.stringify(s)
     }
 }

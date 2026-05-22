@@ -587,23 +587,44 @@ static int estimateMergeFrames(int iso, int64_t exposureNs, float aperture) {
     else                return 12;
 }
 
-void CameraBridge::capturePhoto(const QString& outputPath) {
+void CameraBridge::capturePhoto(const QString& outputPath, const QString& settingsJson) {
     if (!isReady() || isRecording() || !cameraSession_) return;
     if (!isRawCapable()) {
         emit cameraError("RAW capture not supported on this device");
         return;
     }
     QString path = outputPath.isEmpty() ? defaultPhotoPath() : outputPath;
+
+    // Default settings + JSON overrides. PostProcessSettings(json) maps any
+    // recognised fields (contrast, saturation, dng, spatialDenoiseLevel, ...)
+    // and leaves the rest at defaults. "saveJpeg" is bridge-only (not part of
+    // PostProcessSettings) so we parse it out separately.
+    motioncam::PostProcessSettings settings;
+    bool saveJpeg = true;
+    if (!settingsJson.isEmpty()) {
+        std::string err;
+        auto j = json11::Json::parse(settingsJson.toStdString(), err);
+        if (err.empty()) {
+            settings = motioncam::PostProcessSettings(j);
+            if (j["saveJpeg"].is_bool())
+                saveJpeg = j["saveJpeg"].bool_value();
+        }
+    }
+
+    // Skip the JPEG processing step only when neither JPEG nor DNG is requested.
+    // If DNG is on but JPEG is off, we still run ProcessImage (libMotionCam writes
+    // the DNG inside process()); a JPEG file is also produced as a side-effect —
+    // suppressing it would require a libMotionCam change.
     {
         std::lock_guard<std::mutex> lk(captureOutputMutex_);
         captureOutputPath_ = path;
-        captureSkipProcessing_ = false;
+        captureSkipProcessing_ = !saveJpeg && !settings.dng;
     }
+
     float aperture = 0.0f;
     if (cameraDesc_ && !cameraDesc_->metadata.apertures.empty())
         aperture = cameraDesc_->metadata.apertures[0];
     int numMerge = estimateMergeFrames(lastIso_.load(), lastExposureNs_.load(), aperture);
-    motioncam::PostProcessSettings settings;
     cameraSession_->captureHdr(numMerge, settings, path.toStdString());
 }
 

@@ -71,7 +71,11 @@ public:
     Q_INVOKABLE void switchCamera();
     Q_INVOKABLE void startRecording(const QString& outputPath = QString());
     Q_INVOKABLE void stopRecording();
-    Q_INVOKABLE void capturePhoto(const QString& outputPath = QString());
+    // settingsJson can include: contrast, saturation, dng, spatialDenoiseLevel,
+    // and a "saveJpeg" boolean (not part of PostProcessSettings — when false and
+    // dng is also false, the JPEG processing step is skipped entirely).
+    Q_INVOKABLE void capturePhoto(const QString& outputPath = QString(),
+                                  const QString& settingsJson = QString());
     Q_INVOKABLE void captureRaw(const QString& outputPath = QString());
     // Queue an HDR underexposed precapture using current ISO and exposureTime/4.
     // Call on shutter-press DOWN so the frame is ready by the time capturePhoto fires.
